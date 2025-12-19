@@ -1,0 +1,5 @@
+polars>=0.20.0
+pyarrow>=14.0.0
+wrds>=3.1.0
+pyyaml>=6.0
+
