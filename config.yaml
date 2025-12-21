@@ -1,0 +1,24 @@
+# Stage A Configuration
+# Based on config.example.yaml
+
+stage_a:
+  # Root directory for raw Parquet files
+  parquet_raw_root: /Volumes/Data/parquet_raw
+  
+  # Root directory for CSV files (optional, used if available)
+  csv_root: /Volumes/Data/taq
+  
+  # WRDS username (optional, will prompt if not provided)
+  wrds_username: null
+  
+  # Extraction settings
+  chunk_size: 50  # Number of symbols to process per chunk from WRDS
+  streaming_chunk_rows: 1000000  # Rows per chunk when reading CSV files
+  
+  # Parquet settings
+  compression: snappy  # Options: snappy, gzip, zstd, lz4
+  partition_by_symbol: true  # Partition by symbol subdirectory
+  
+  # Timezone for timestamp conversion
+  timezone: America/New_York
+

@@ -40,14 +40,26 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Extract for S&P 500 + ETFs (default)
+  # Extract for S&P 500 + ETFs (default: all data types)
   python -m src.stage_a.extract --date 2024-06-10 --config config.yaml
+  
+  # Extract only trades data
+  python -m src.stage_a.extract --date 2024-06-10 --config config.yaml --type trades
+  
+  # Extract trades and quotes (multiple types)
+  python -m src.stage_a.extract --date 2024-06-10 --config config.yaml --type trades quotes
   
   # Extract for specific symbols
   python -m src.stage_a.extract --date 2024-06-10 --symbols AAPL,MSFT,GOOGL --config config.yaml
   
-  # Extract from symbol file
-  python -m src.stage_a.extract --date 2024-06-10 --symbols symbols.txt --config config.yaml
+  # Extract only NBBO for specific symbols
+  python -m src.stage_a.extract --date 2024-06-10 --symbols AAPL --config config.yaml --type nbbo
+  
+  # Resume interrupted extraction (skip already ingested symbols)
+  python -m src.stage_a.extract --date 2024-06-10 --config config.yaml --resume
+  
+  # Skip CSV files and extract directly from WRDS
+  python -m src.stage_a.extract --date 2024-06-10 --config config.yaml --skip-csv
   
   # Overwrite existing data
   python -m src.stage_a.extract --date 2024-06-10 --symbols AAPL --config config.yaml --overwrite
@@ -74,7 +86,28 @@ Examples:
     parser.add_argument(
         "--overwrite",
         action="store_true",
-        help="Overwrite existing data (default: skip if already ingested)",
+        help="Force overwrite: delete existing partitions and re-extract all data",
+    )
+    parser.add_argument(
+        "--type",
+        choices=["trades", "quotes", "nbbo"],
+        nargs="+",
+        default=None,
+        help="Data type(s) to extract: trades, quotes, nbbo. "
+             "Can specify multiple types (e.g., --type trades quotes). "
+             "Default: extract all types (trades, quotes, nbbo)",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume extraction: skip symbols that are already ingested. "
+             "Useful when extraction was interrupted and you want to continue from where it left off.",
+    )
+    parser.add_argument(
+        "--skip-csv",
+        action="store_true",
+        help="Skip local CSV files and extract directly from WRDS. "
+             "Useful when you want fresh data from WRDS even if CSV files exist.",
     )
     parser.add_argument(
         "--verbose",
@@ -127,6 +160,14 @@ Examples:
             logger.error("Please provide --symbols or ensure WRDS connection is configured")
             sys.exit(1)
     
+    # Parse data types
+    if args.type:
+        data_types = args.type
+        logger.info(f"Extracting data types: {', '.join(data_types)}")
+    else:
+        data_types = ["trades", "quotes", "nbbo"]  # Default: all types
+        logger.info("Extracting all data types: trades, quotes, nbbo")
+    
     # Execute Stage A
     try:
         results = extract_stage_a(
@@ -134,14 +175,16 @@ Examples:
             trade_date=trade_date,
             symbols=symbols,
             overwrite=args.overwrite,
+            data_types=data_types,
+            resume=args.resume,
+            skip_csv=args.skip_csv,
         )
         
         logger.info("\n" + "=" * 80)
         logger.info("Extraction Summary")
         logger.info("=" * 80)
-        logger.info(f"Trades: {results['trades']:,} rows")
-        logger.info(f"Quotes: {results['quotes']:,} rows")
-        logger.info(f"NBBO: {results['nbbo']:,} rows")
+        for dt in data_types:
+            logger.info(f"{dt.capitalize()}: {results[dt]:,} rows")
         
     except Exception as e:
         logger.error(f"Extraction failed: {e}", exc_info=True)

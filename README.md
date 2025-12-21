@@ -48,6 +48,26 @@ python -m src.stage_a.extract \
 
 The default ETFs are: SPY, QQQ, DIA, IWM, JETS, XLE, XLK, XLF, XLU, XLY, XLP, XLI, XLB, XLV, XLRE, XLC
 
+By default, all data types (trades, quotes, nbbo) are extracted. Use `--type` to specify which types to extract.
+
+### Extract specific data types
+
+Extract only trades:
+```bash
+python -m src.stage_a.extract \
+  --date 2024-06-10 \
+  --config config.yaml \
+  --type trades
+```
+
+Extract multiple types:
+```bash
+python -m src.stage_a.extract \
+  --date 2024-06-10 \
+  --config config.yaml \
+  --type trades quotes
+```
+
 ### Extract data for specific symbols
 
 ```bash
@@ -74,7 +94,53 @@ python -m src.stage_a.extract \
   --config config.yaml
 ```
 
-### Overwrite existing data
+### Extract specific data type for symbols
+
+Extract only NBBO data for specific symbols:
+```bash
+python -m src.stage_a.extract \
+  --date 2024-06-10 \
+  --symbols AAPL,MSFT \
+  --config config.yaml \
+  --type nbbo
+```
+
+### Resume interrupted extraction
+
+If extraction was interrupted, use `--resume` to continue from where it left off. This will skip symbols that are already ingested:
+
+```bash
+python -m src.stage_a.extract \
+  --date 2024-06-10 \
+  --config config.yaml \
+  --resume
+```
+
+You can combine `--resume` with `--type` to resume only specific data types:
+```bash
+python -m src.stage_a.extract \
+  --date 2024-06-10 \
+  --config config.yaml \
+  --type quotes \
+  --resume
+```
+
+### Skip CSV files and extract from WRDS
+
+By default, the pipeline uses local CSV files if available. Use `--skip-csv` to force extraction directly from WRDS:
+
+```bash
+python -m src.stage_a.extract \
+  --date 2024-06-10 \
+  --config config.yaml \
+  --skip-csv
+```
+
+This is useful when you want fresh data from WRDS even if CSV files exist locally.
+
+### Force overwrite existing data
+
+The `--overwrite` flag will delete existing partitions and re-extract all data:
 
 ```bash
 python -m src.stage_a.extract \
@@ -83,6 +149,8 @@ python -m src.stage_a.extract \
   --config config.yaml \
   --overwrite
 ```
+
+**Warning**: This will permanently delete existing Parquet files for the specified date and symbols before re-extraction.
 
 ## Data Structure
 
