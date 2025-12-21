@@ -33,7 +33,12 @@ class WRDSExtractor:
         """Connect to WRDS."""
         if self.db is None:
             logger.info("Connecting to WRDS...")
-            self.db = wrds.Connection(wrds_username=self.config.wrds_username)
+            # Only pass username if explicitly configured, otherwise let library use .pgpass
+            if self.config.wrds_username:
+                self.db = wrds.Connection(wrds_username=self.config.wrds_username)
+            else:
+                # Let library use .pgpass file automatically
+                self.db = wrds.Connection()
             logger.info("✓ Connected to WRDS")
     
     def close(self):
@@ -123,6 +128,62 @@ class WRDSExtractor:
                     return schema
         
         raise ValueError(f"Could not find table {table_name} in any schema (tried: {schemas_to_try})")
+    
+    def check_tables_available(self, trade_date: date, data_types: list[str]) -> bool:
+        """
+        Check if TAQ tables are available for the given date and data types.
+        
+        Args:
+            trade_date: Trade date to check
+            data_types: List of data types to check (e.g., ["trades", "nbbo"])
+            
+        Returns:
+            True if all requested tables exist, False otherwise
+        """
+        if self.db is None:
+            self.connect()
+        
+        date_str = trade_date.strftime("%Y%m%d")
+        year = trade_date.strftime("%Y")
+        
+        # Map data types to table name patterns
+        table_patterns = {
+            "trades": f"ctm_{date_str}",
+            "quotes": f"cqm_{date_str}",
+            "nbbo": f"complete_nbbo_{date_str}",
+        }
+        
+        schemas_to_try = [f"taqm_{year}", "taqmsec"]
+        
+        for data_type in data_types:
+            table_name = table_patterns.get(data_type)
+            if not table_name:
+                logger.warning(f"Unknown data type: {data_type}, skipping table check")
+                continue
+            
+            # Try to find the table in any schema
+            found = False
+            for schema in schemas_to_try:
+                try:
+                    test_query = f"SELECT 1 FROM {schema}.{table_name} LIMIT 1"
+                    self.db.raw_sql(test_query)
+                    found = True
+                    logger.debug(f"Found {data_type} table: {schema}.{table_name}")
+                    break
+                except Exception as e:
+                    error_msg = str(e).lower()
+                    if 'does not exist' in error_msg or 'undefined' in error_msg:
+                        continue
+                    else:
+                        # Other error might mean table exists but query failed
+                        found = True
+                        break
+            
+            if not found:
+                logger.debug(f"Table not found for {data_type} on {trade_date}")
+                return False
+        
+        return True
     
     def extract_trades_streaming(
         self,

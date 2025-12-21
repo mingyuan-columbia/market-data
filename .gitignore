@@ -1,1 +1,4 @@
 mkdata/
+
+# WRDS credentials (never commit!)
+.pgpass

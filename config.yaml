@@ -3,13 +3,13 @@
 
 stage_a:
   # Root directory for raw Parquet files
-  parquet_raw_root: /Volumes/Data/parquet_raw
+  parquet_raw_root: /home/mingyuan/data/taq/parquet_raw
   
   # Root directory for CSV files (optional, used if available)
-  csv_root: /Volumes/Data/taq
+  csv_root: null
   
   # WRDS username (optional, will prompt if not provided)
-  wrds_username: null
+  wrds_username: mingyuancu
   
   # Extraction settings
   chunk_size: 50  # Number of symbols to process per chunk from WRDS

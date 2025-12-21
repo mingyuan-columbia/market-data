@@ -15,7 +15,7 @@ class StageAConfig:
     
     # Paths
     parquet_raw_root: Path
-    csv_root: Path
+    csv_root: Optional[Path]
     
     # WRDS connection
     wrds_username: Optional[str] = None
@@ -39,9 +39,12 @@ def load_config(config_path: str) -> StageAConfig:
     
     stage_a = raw.get("stage_a", {})
     
+    csv_root_value = stage_a.get("csv_root")
+    csv_root = Path(csv_root_value) if csv_root_value is not None else None
+    
     return StageAConfig(
         parquet_raw_root=Path(stage_a.get("parquet_raw_root", "/Volumes/Data/parquet_raw")),
-        csv_root=Path(stage_a.get("csv_root", "/Volumes/Data/taq")),
+        csv_root=csv_root,
         wrds_username=stage_a.get("wrds_username"),
         chunk_size=stage_a.get("chunk_size", 50),
         streaming_chunk_rows=stage_a.get("streaming_chunk_rows", 1_000_000),

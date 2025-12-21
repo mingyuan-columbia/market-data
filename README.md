@@ -34,6 +34,42 @@ stage_a:
   timezone: America/New_York
 ```
 
+### Setting Up WRDS Credentials
+
+To avoid entering your WRDS password every time, you can securely store your credentials using a `.pgpass` file. The WRDS Python library will automatically use this file.
+
+**Option 1: Use the setup script (recommended)**
+
+Run the helper script to set up your credentials:
+
+```bash
+python setup_wrds_credentials.py
+```
+
+This script will:
+- Prompt you for your WRDS username and password
+- Create/update `~/.pgpass` with secure permissions (600)
+- Store your credentials in the standard PostgreSQL password file format
+
+**Option 2: Manual setup**
+
+Create or edit `~/.pgpass` with the following format:
+
+```
+wrds-pgdata.wharton.upenn.edu:9737:wrds:your_username:your_password
+```
+
+Then set restrictive permissions:
+
+```bash
+chmod 600 ~/.pgpass
+```
+
+**Important Security Notes:**
+- The `.pgpass` file should have permissions 600 (read/write for owner only)
+- Never commit `.pgpass` to version control
+- Make sure your `config.yaml` includes your WRDS username: `wrds_username: your_username`
+
 ## Usage
 
 ### Extract data for S&P 500 + ETFs (default)
@@ -48,7 +84,43 @@ python -m src.stage_a.extract \
 
 The default ETFs are: SPY, QQQ, DIA, IWM, JETS, XLE, XLK, XLF, XLU, XLY, XLP, XLI, XLB, XLV, XLRE, XLC
 
-By default, all data types (trades, quotes, nbbo) are extracted. Use `--type` to specify which types to extract.
+By default, trades and nbbo data types are extracted. Use `--type` to specify which types to extract.
+
+### Extract data for a date range
+
+Extract data for multiple dates at once. The pipeline will:
+1. Check if each date is a trading day (weekday)
+2. Check if TAQ tables are available for that date
+3. Extract data only for dates that meet both conditions
+
+```bash
+python -m src.stage_a.extract \
+  --start-date 2024-06-10 \
+  --end-date 2024-06-14 \
+  --config config.yaml
+```
+
+This will process all trading days between June 10-14, 2024 (excluding weekends) and skip any dates where TAQ tables are not available.
+
+You can combine date range extraction with other options:
+
+```bash
+# Extract date range for specific symbols
+python -m src.stage_a.extract \
+  --start-date 2024-06-10 \
+  --end-date 2024-06-14 \
+  --symbols AAPL,MSFT,GOOGL \
+  --config config.yaml
+
+# Extract date range with resume mode
+python -m src.stage_a.extract \
+  --start-date 2024-06-10 \
+  --end-date 2024-06-14 \
+  --config config.yaml \
+  --resume
+```
+
+**Note:** When using date range mode, the pipeline checks table availability before attempting extraction, which helps avoid errors for dates when data is not yet available in WRDS.
 
 ### Extract specific data types
 
@@ -125,18 +197,17 @@ python -m src.stage_a.extract \
   --resume
 ```
 
-### Skip CSV files and extract from WRDS
+### CSV file handling
 
-By default, the pipeline uses local CSV files if available. Use `--skip-csv` to force extraction directly from WRDS:
+The pipeline will use local CSV files if `csv_root` is configured in `config.yaml`. If `csv_root` is set to `null` or not provided, the pipeline will extract directly from WRDS without checking for CSV files.
 
-```bash
-python -m src.stage_a.extract \
-  --date 2024-06-10 \
-  --config config.yaml \
-  --skip-csv
+To use CSV files, set `csv_root` in your config:
+```yaml
+stage_a:
+  csv_root: /path/to/csv/files
 ```
 
-This is useful when you want fresh data from WRDS even if CSV files exist locally.
+To extract directly from WRDS (default when csv_root is null), simply leave `csv_root` as `null` in the config.
 
 ### Force overwrite existing data
 

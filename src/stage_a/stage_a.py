@@ -12,6 +12,7 @@ import polars as pl
 
 from .config import StageAConfig
 from .csv_reader import check_csv_exists
+from .date_utils import filter_trading_days, get_date_range
 from .ingestion_checker import (
     check_ingestion_status,
     check_partition_exists,
@@ -39,14 +40,13 @@ def extract_stage_a(
     overwrite: bool = False,
     data_types: list[str] | None = None,
     resume: bool = False,
-    skip_csv: bool = False,
 ) -> dict[str, int]:
     """
     Execute Stage A extraction for the given date and symbols.
     
     Process:
     1. Check if data already ingested (skip if fully ingested unless overwrite=True or resume=True)
-    2. Check for CSV files and use them if available (unless skip_csv=True)
+    2. Check for CSV files and use them if available (only if csv_root is configured)
     3. Extract from WRDS for missing data
     
     Args:
@@ -54,16 +54,15 @@ def extract_stage_a(
         trade_date: Trade date
         symbols: List of symbols to extract
         overwrite: If True, overwrite existing data
-        data_types: List of data types to extract (default: ["trades", "quotes", "nbbo"])
+        data_types: List of data types to extract (default: ["trades", "nbbo"])
         resume: If True, skip symbols that are already ingested (useful for resuming interrupted extractions)
-        skip_csv: If True, skip local CSV files and extract directly from WRDS
         
     Returns:
         Dictionary with row counts: {"trades": 1000, "quotes": 2000, "nbbo": 1500}
     """
     # Set default data types if not provided
     if data_types is None:
-        data_types = ["trades", "quotes", "nbbo"]
+        data_types = ["trades", "nbbo"]
     
     # Validate data types
     valid_types = {"trades", "quotes", "nbbo"}
@@ -193,13 +192,13 @@ def extract_stage_a(
         logger.info(f"Processing {data_type.upper()}")
         logger.info(f"{'=' * 80}")
         
-        # Check for CSV file (unless skip_csv is enabled)
+        # Check for CSV file (only if csv_root is configured)
         csv_path = None
-        if not skip_csv:
+        if config.csv_root is not None:
             csv_type = "trade" if data_type == "trades" else ("quote" if data_type == "quotes" else "nbbo")
             csv_path = check_csv_exists(config.csv_root, trade_date, csv_type)
         else:
-            logger.info("Skip CSV mode: ignoring local CSV files, extracting directly from WRDS")
+            logger.info("No CSV root configured: extracting directly from WRDS")
         
         if csv_path:
             logger.info(f"Found CSV file: {csv_path}")
@@ -285,4 +284,121 @@ def extract_stage_a(
         logger.info(f"{dt.capitalize()}: {results[dt]:,} rows")
     
     return results
+
+
+def extract_stage_a_range(
+    config: StageAConfig,
+    start_date: date,
+    end_date: date,
+    symbols: list[str],
+    overwrite: bool = False,
+    data_types: list[str] | None = None,
+    resume: bool = False,
+) -> dict[date, dict[str, int]]:
+    """
+    Execute Stage A extraction for a date range.
+    
+    For each date in the range:
+    1. Check if it's a trading day (weekday)
+    2. Check if TAQ tables are available
+    3. Extract data if both conditions are met
+    
+    Args:
+        config: Stage A configuration
+        start_date: Start date (inclusive)
+        end_date: End date (inclusive)
+        symbols: List of symbols to extract
+        overwrite: If True, overwrite existing data
+        data_types: List of data types to extract (default: ["trades", "nbbo"])
+        resume: If True, skip symbols that are already ingested
+        
+    Returns:
+        Dictionary mapping dates to extraction results:
+        {
+            date(2024, 6, 10): {"trades": 1000, "quotes": 2000, "nbbo": 1500},
+            date(2024, 6, 11): {"trades": 1200, "quotes": 2100, "nbbo": 1600},
+            ...
+        }
+    """
+    # Set default data types if not provided
+    if data_types is None:
+        data_types = ["trades", "nbbo"]
+    
+    logger.info("=" * 80)
+    logger.info(f"Stage A: Extract raw data for date range {start_date} to {end_date} (inclusive)")
+    logger.info(f"Symbols: {len(symbols)}")
+    logger.info(f"Data types: {', '.join(data_types)}")
+    logger.info("=" * 80)
+    
+    # Get all dates in range (both start_date and end_date are inclusive)
+    all_dates = get_date_range(start_date, end_date)
+    logger.info(f"Total dates in range: {len(all_dates)}")
+    
+    # Filter to trading days (weekdays)
+    trading_days = filter_trading_days(all_dates)
+    logger.info(f"Trading days (weekdays): {len(trading_days)}")
+    
+    # Check table availability for each trading day
+    logger.info("\nChecking TAQ table availability...")
+    valid_dates = []
+    
+    with WRDSExtractor(config) as extractor:
+        for check_date in trading_days:
+            if extractor.check_tables_available(check_date, data_types):
+                valid_dates.append(check_date)
+                logger.info(f"  ✓ {check_date}: Tables available")
+            else:
+                logger.info(f"  ✗ {check_date}: Tables not available (skipping)")
+    
+    logger.info(f"\nFound {len(valid_dates)} dates with available TAQ tables")
+    
+    if not valid_dates:
+        logger.warning("No valid dates found with available TAQ tables")
+        return {}
+    
+    # Extract data for each valid date
+    all_results: dict[date, dict[str, int]] = {}
+    
+    for i, trade_date in enumerate(valid_dates, 1):
+        logger.info("\n" + "=" * 80)
+        logger.info(f"Processing date {i}/{len(valid_dates)}: {trade_date}")
+        logger.info("=" * 80)
+        
+        try:
+            results = extract_stage_a(
+                config=config,
+                trade_date=trade_date,
+                symbols=symbols,
+                overwrite=overwrite,
+                data_types=data_types,
+                resume=resume,
+            )
+            all_results[trade_date] = results
+        except Exception as e:
+            logger.error(f"Error extracting data for {trade_date}: {e}", exc_info=True)
+            logger.warning(f"Skipping {trade_date} and continuing with next date...")
+            all_results[trade_date] = {"trades": 0, "quotes": 0, "nbbo": 0}
+    
+    # Summary
+    logger.info("\n" + "=" * 80)
+    logger.info("Date Range Extraction Summary")
+    logger.info("=" * 80)
+    logger.info(f"Dates processed: {len(all_results)}")
+    logger.info(f"Dates skipped: {len(trading_days) - len(valid_dates)}")
+    
+    total_rows = {"trades": 0, "quotes": 0, "nbbo": 0}
+    for date_result in all_results.values():
+        for dt in data_types:
+            total_rows[dt] += date_result.get(dt, 0)
+    
+    logger.info("\nTotal rows extracted:")
+    for dt in data_types:
+        logger.info(f"  {dt.capitalize()}: {total_rows[dt]:,} rows")
+    
+    logger.info("\nPer-date breakdown:")
+    for trade_date, results in sorted(all_results.items()):
+        row_str = ", ".join([f"{dt}: {results.get(dt, 0):,}" for dt in data_types])
+        logger.info(f"  {trade_date}: {row_str}")
+    
+    return all_results
 
