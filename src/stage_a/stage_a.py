@@ -11,7 +11,6 @@ from typing import Literal
 import polars as pl
 
 from .config import StageAConfig
-from .csv_reader import check_csv_exists
 from .date_utils import filter_trading_days, get_date_range
 from .ingestion_checker import (
     check_ingestion_status,
@@ -21,7 +20,6 @@ from .ingestion_checker import (
     is_fully_ingested,
 )
 from .parquet_writer import (
-    write_chunked_from_csv,
     write_chunks_incrementally,
     write_partitioned_streaming,
 )
@@ -46,8 +44,7 @@ def extract_stage_a(
     
     Process:
     1. Check if data already ingested (skip if fully ingested unless overwrite=True or resume=True)
-    2. Check for CSV files and use them if available (only if csv_root is configured)
-    3. Extract from WRDS for missing data
+    2. Extract from WRDS for missing data
     
     Args:
         config: Stage A configuration
@@ -192,62 +189,8 @@ def extract_stage_a(
         logger.info(f"Processing {data_type.upper()}")
         logger.info(f"{'=' * 80}")
         
-        # Check for CSV file (only if csv_root is configured)
-        csv_path = None
-        if config.csv_root is not None:
-            csv_type = "trade" if data_type == "trades" else ("quote" if data_type == "quotes" else "nbbo")
-            csv_path = check_csv_exists(config.csv_root, trade_date, csv_type)
-        else:
-            logger.info("No CSV root configured: extracting directly from WRDS")
-        
-        if csv_path:
-            logger.info(f"Found CSV file: {csv_path}")
-            logger.info("Using CSV file (streaming mode)...")
-            
-            # Create enrichment function with captured variables
-            def make_enrich_fn(td: date, run_id: str, tz: str):
-                def enrich_chunk(chunk: pl.DataFrame) -> pl.DataFrame:
-                    return chunk.with_columns([
-                        pl.lit(td).alias("trade_date"),
-                        build_canonical_symbol(pl.col("sym_root"), pl.col("sym_suffix")).alias("symbol"),
-                        build_ts_event(
-                            pl.col("date"),
-                            pl.col("time_m"),
-                            pl.col("time_m_nano"),
-                            tz,
-                        ).alias("ts_event"),
-                        pl.lit(run_id).alias("extract_run_id"),
-                        pl.lit(datetime.utcnow()).alias("ingest_ts"),
-                    ])
-                return enrich_chunk
-            
-            enrich_fn = make_enrich_fn(trade_date, extract_run_id, config.timezone)
-            
-            # Read from CSV and write to Parquet (streaming mode)
-            # Only extract missing symbols
-            missing_symbols = symbols_to_extract[data_type]
-            
-            if not missing_symbols:
-                logger.info(f"No missing symbols for {data_type}, skipping CSV processing")
-                results[data_type] = 0
-                continue
-            
-            logger.info(f"Filtering CSV to only extract {len(missing_symbols)} missing symbols: {missing_symbols[:10]}{'...' if len(missing_symbols) > 10 else ''}")
-            
-            results[data_type] = write_chunked_from_csv(
-                csv_path,
-                config.parquet_raw_root,
-                data_type,
-                trade_date,
-                compression=config.compression,
-                partition_by_symbol=config.partition_by_symbol,
-                chunk_size=config.streaming_chunk_rows,
-                enrich_fn=enrich_fn,
-                symbols_to_extract=missing_symbols if missing_symbols else None,
-            )
-        else:
-            # Extract from WRDS using streaming (memory-efficient)
-            logger.info("No CSV file found. Extracting from WRDS (streaming mode)...")
+        # Extract from WRDS using streaming (memory-efficient)
+        logger.info("Extracting from WRDS (streaming mode)...")
             
             with WRDSExtractor(config) as extractor:
                 # Create iterator based on data type

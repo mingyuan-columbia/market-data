@@ -2,3 +2,6 @@ mkdata/
 
 # WRDS credentials (never commit!)
 .pgpass
+
+# Secrets configuration (never commit!)
+config.secrets.yaml

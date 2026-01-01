@@ -5,15 +5,12 @@ stage_a:
   # Root directory for raw Parquet files
   parquet_raw_root: /Volumes/Data/parquet_raw
   
-  # Root directory for CSV files (optional, used if available)
-  csv_root: /Volumes/Data/taq
-  
   # WRDS username (optional, will prompt if not provided)
   wrds_username: null
   
   # Extraction settings
   chunk_size: 50  # Number of symbols to process per chunk from WRDS
-  streaming_chunk_rows: 1000000  # Rows per chunk when reading CSV files
+  streaming_chunk_rows: 1000000  # Rows per chunk
   
   # Parquet settings
   compression: snappy  # Options: snappy, gzip, zstd, lz4
@@ -21,4 +18,93 @@ stage_a:
   
   # Timezone for timestamp conversion
   timezone: America/New_York
+
+# Stage A Alpaca Configuration
+stage_a_alpaca:
+  # Root directory for raw Parquet files (separate from TAQ data)
+  parquet_raw_root: /Volumes/Data/alpaca/parquet_raw
+  
+  # TAQ data root for symbol discovery (optional)
+  # If --symbols is not provided, symbols will be discovered from this directory
+  taq_parquet_root: /Volumes/Data/parquet_raw
+  
+  # Alpaca API credentials (set via environment variables or here)
+  # For security, consider using environment variables: ALPACA_API_KEY, ALPACA_SECRET_KEY
+  alpaca_api_key: null  # Your Alpaca API key
+  alpaca_secret_key: null  # Your Alpaca secret key
+  
+  # Alpaca API base URL
+  # Use "https://paper-api.alpaca.markets" for paper trading (free tier)
+  # Use "https://api.alpaca.markets" for live trading (requires paid account)
+  alpaca_base_url: https://paper-api.alpaca.markets
+  
+  # Data feed (use "sip" for consolidated SIP data)
+  feed: sip
+  
+  # Extraction settings
+  chunk_size: 50  # Number of symbols to process per chunk
+  streaming_chunk_rows: 1000000  # Rows per chunk
+  
+  # Parquet settings
+  compression: snappy  # Options: snappy, gzip, zstd, lz4
+  partition_by_symbol: true  # Partition by symbol subdirectory
+  
+  # Timezone for timestamp conversion
+  timezone: America/New_York
+  
+  # API settings
+  page_limit: 10000  # Max records per API call
+
+# Stage A Alpaca IEX Configuration
+stage_a_alpaca_iex:
+  # Root directory for raw Parquet files (separate from TAQ, Alpaca SIP, and CSV data)
+  parquet_raw_root: /Volumes/Data/alpaca_iex/parquet_raw
+  
+  # Alpaca API credentials (shared with stage_a_alpaca, set in config.secrets.yaml)
+  alpaca_api_key: null  # Set in config.secrets.yaml or environment variables
+  alpaca_secret_key: null  # Set in config.secrets.yaml or environment variables
+  
+  # Alpaca API base URL
+  alpaca_base_url: https://paper-api.alpaca.markets
+  
+  # Data feed (IEX feed - available on free tier)
+  feed: iex
+  
+  # Extraction settings
+  chunk_size: 50
+  streaming_chunk_rows: 1000000
+  
+  # Parquet settings
+  compression: snappy
+  partition_by_symbol: true
+  
+  # Timezone for timestamp conversion
+  timezone: America/New_York
+  
+  # API settings
+  page_limit: 10000
+
+# Stage A CSV Configuration
+stage_a_csv:
+  # Root directory for raw Parquet files (separate from TAQ and Alpaca data)
+  parquet_raw_root: /Volumes/Data/csv/parquet_raw
+  
+  # Root directory containing CSV files (can be anywhere - point to where your CSV files are located)
+  csv_root: /path/to/your/csv/files
+  
+  # Extraction settings
+  chunk_size: 1000000  # Rows per chunk when reading CSV files
+  
+  # Parquet settings
+  compression: snappy  # Options: snappy, gzip, zstd, lz4
+  partition_by_symbol: true  # Partition by symbol subdirectory
+  
+  # Timezone for timestamp conversion
+  timezone: America/New_York
+  
+  # CSV file naming pattern
+  # Files should be named: {prefix}_{date}.csv where date is YYYYMMDD
+  csv_prefix_trades: taq_trade
+  csv_prefix_quotes: taq_quote
+  csv_prefix_nbbo: taq_nbbo
 

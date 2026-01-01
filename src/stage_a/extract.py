@@ -143,7 +143,6 @@ Examples:
         config = load_config(args.config)
         logger.info(f"Loaded config from {args.config}")
         logger.info(f"  Parquet root: {config.parquet_raw_root}")
-        logger.info(f"  CSV root: {config.csv_root}")
     except Exception as e:
         logger.error(f"Error loading config: {e}")
         sys.exit(1)

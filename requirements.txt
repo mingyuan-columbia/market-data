@@ -1,5 +1,14 @@
+# NumPy version constraint MUST come first (for GPU libraries compatibility)
+numpy<2.3.0,>=1.26.0
 polars>=0.20.0
 pyarrow>=14.0.0
 wrds>=3.1.0
 pyyaml>=6.0
+matplotlib>=3.5.0
+requests>=2.31.0
+python-dateutil>=2.8.0
+# Optional GPU acceleration (install separately if GPU available):
+# cudf-cu12 --extra-index-url=https://pypi.nvidia.com
+# or
+# cupy-cuda12x
 
