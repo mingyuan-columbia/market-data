@@ -5,3 +5,4 @@ mkdata/
 
 # Secrets configuration (never commit!)
 config.secrets.yaml
+.streamlit/secrets.toml

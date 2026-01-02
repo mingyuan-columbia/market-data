@@ -7,6 +7,8 @@ pyyaml>=6.0
 matplotlib>=3.5.0
 requests>=2.31.0
 python-dateutil>=2.8.0
+streamlit>=1.28.0
+plotly>=5.17.0
 # Optional GPU acceleration (install separately if GPU available):
 # cudf-cu12 --extra-index-url=https://pypi.nvidia.com
 # or
