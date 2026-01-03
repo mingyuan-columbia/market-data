@@ -528,6 +528,41 @@ Since all three data sources use the same canonical schema and storage format, y
 
 The `tr_source` field in trades data indicates the source: `"WRDS"`, `"ALPACA"`, or `"CSV"`.
 
+## Streamlit Visualization App
+
+An interactive web application for visualizing and analyzing market data.
+
+### Running Locally
+
+```bash
+./run_streamlit.sh
+```
+
+The app will be available at `http://localhost:8500`
+
+### Accessing from External Devices (Cloudflare Tunnel)
+
+To access the Streamlit app from your iPhone, iPad, or any device outside your local network:
+
+1. **Install Cloudflare Tunnel:**
+   ```bash
+   ./setup_cloudflare_tunnel.sh
+   ```
+
+2. **Run with tunnel:**
+   ```bash
+   ./run_streamlit_with_tunnel.sh
+   ```
+
+3. **Access via the provided URL:**
+   - The script will display a Cloudflare Tunnel URL (e.g., `https://random-name.trycloudflare.com`)
+   - Open this URL in any browser on any device
+   - The URL is valid until you stop the tunnel
+
+**Security Note:** The app is password-protected. Make sure you have set a password in `.streamlit/secrets.toml`.
+
+For detailed setup instructions and security considerations, see [CLOUDFLARE_TUNNEL.md](CLOUDFLARE_TUNNEL.md).
+
 ## Next Steps
 
 Stage B (enrichment) and Stage C (bars) will be implemented next.

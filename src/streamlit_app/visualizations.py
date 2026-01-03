@@ -6,6 +6,7 @@ import polars as pl
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from datetime import timedelta, datetime
 
 
 def calculate_vwap(trades: pl.DataFrame, window: str = "1m") -> pl.DataFrame:
@@ -60,27 +61,136 @@ def calculate_churn(nbbo: pl.DataFrame, window: str = "1m") -> pl.DataFrame:
     return churn
 
 
-def calculate_slippage(enriched_trades: pl.DataFrame) -> pl.DataFrame:
+def calculate_adaptive_max_points(
+    total_seconds: float,
+    data_type: str = "nbbo",
+) -> int:
     """
-    Calculate slippage (trade price deviation from mid price).
+    Calculate adaptive max_points based on time window duration.
+    Allows more points for shorter time windows to enable better zooming.
     
     Args:
-        enriched_trades: Enriched trades DataFrame with best_bid and best_ask
+        total_seconds: Duration of time window in seconds
+        data_type: "nbbo" or "trades" - trades can handle more points
         
     Returns:
-        DataFrame with slippage column added
+        Maximum number of points to keep
     """
-    if "best_bid" not in enriched_trades.columns or "best_ask" not in enriched_trades.columns:
-        raise ValueError("enriched_trades must have best_bid and best_ask columns")
+    # Base multiplier: trades can handle more points than NBBO
+    base_multiplier = 2.0 if data_type == "trades" else 1.0
     
-    enriched = enriched_trades.with_columns([
-        ((pl.col("best_bid") + pl.col("best_ask")) / 2).alias("mid_price"),
-    ]).with_columns([
-        (pl.col("price") - pl.col("mid_price")).alias("slippage"),
-        ((pl.col("price") - pl.col("mid_price")) / pl.col("mid_price") * 10000).alias("slippage_bps"),
+    # Adaptive limits based on time window
+    if total_seconds < 30:  # Less than 30 seconds
+        return int(5000 * base_multiplier)  # Allow up to 5k-10k points
+    elif total_seconds < 120:  # Less than 2 minutes
+        return int(10000 * base_multiplier)  # Allow up to 10k-20k points
+    elif total_seconds < 600:  # Less than 10 minutes
+        return int(15000 * base_multiplier)  # Allow up to 15k-30k points
+    elif total_seconds < 1800:  # Less than 30 minutes
+        return int(10000 * base_multiplier)  # Allow up to 10k-20k points
+    else:  # 30+ minutes
+        return int(10000 * base_multiplier)  # Default limit
+
+
+def downsample_data(
+    df: pl.DataFrame,
+    time_col: str,
+    max_points: int | None = None,
+    start_time: datetime | None = None,
+    end_time: datetime | None = None,
+    data_type: str = "nbbo",
+) -> pl.DataFrame:
+    """
+    Downsample data to max_points by time-binning with 'last' aggregation.
+    If max_points is None, automatically calculates adaptive limit based on time window.
+    
+    Args:
+        df: DataFrame to downsample
+        time_col: Name of timestamp column
+        max_points: Maximum number of points to keep (None = auto-calculate)
+        start_time: Optional start time for window calculation
+        end_time: Optional end time for window calculation
+        data_type: "nbbo" or "trades" - used for adaptive max_points calculation
+        
+    Returns:
+        Downsampled DataFrame
+    """
+    # Calculate time window if provided
+    if start_time is not None and end_time is not None:
+        window_duration = end_time - start_time
+        total_seconds = window_duration.total_seconds()
+    else:
+        # Use data range
+        min_ts = df[time_col].min()
+        max_ts = df[time_col].max()
+        if isinstance(min_ts, pl.Series):
+            min_ts = min_ts.item()
+        if isinstance(max_ts, pl.Series):
+            max_ts = max_ts.item()
+        
+        # Convert Polars datetime to Python datetime if needed
+        if hasattr(min_ts, 'timestamp'):
+            # Already a datetime
+            window_duration = max_ts - min_ts
+            total_seconds = window_duration.total_seconds()
+        else:
+            # Try to calculate from timestamps
+            try:
+                if isinstance(min_ts, (int, float)):
+                    total_seconds = (max_ts - min_ts) / 1_000_000  # Assume microseconds
+                else:
+                    # Fallback: use a default
+                    total_seconds = 3600  # 1 hour default
+            except:
+                total_seconds = 3600
+    
+    # Auto-calculate max_points if not provided
+    if max_points is None:
+        max_points = calculate_adaptive_max_points(total_seconds, data_type)
+    
+    if len(df) <= max_points:
+        return df
+    
+    # Calculate bucket size to get approximately max_points
+    bucket_seconds = max(0.001, total_seconds / max_points)  # At least 1ms
+    
+    # Determine appropriate time unit (Polars format)
+    if bucket_seconds >= 1:
+        bucket_str = f"{int(bucket_seconds)}s"
+    elif bucket_seconds >= 0.1:
+        bucket_str = "100ms"
+    elif bucket_seconds >= 0.01:
+        bucket_str = "10ms"
+    else:
+        bucket_str = "1ms"
+    
+    # Group by time bucket and take last value (or aggregate)
+    # For NBBO: take last bid/ask per bucket
+    # For trades: count/sum per bucket
+    df_with_bucket = df.with_columns([
+        pl.col(time_col).dt.truncate(bucket_str).alias("_time_bucket"),
     ])
     
-    return enriched
+    # Get column names (excluding time_col and bucket)
+    agg_cols = [c for c in df.columns if c != time_col]
+    
+    # Aggregate: for numeric columns, take last; for others, take first
+    agg_exprs = []
+    for col in agg_cols:
+        if df[col].dtype in [pl.Int64, pl.Int32, pl.Float64, pl.Float32]:
+            agg_exprs.append(pl.col(col).last().alias(col))
+        else:
+            agg_exprs.append(pl.col(col).first().alias(col))
+    
+    # Also keep the bucket time
+    agg_exprs.append(pl.col("_time_bucket").first().alias(time_col))
+    
+    downsampled = df_with_bucket.group_by("_time_bucket").agg(agg_exprs).sort(time_col)
+    
+    # Drop the bucket column
+    downsampled = downsampled.drop("_time_bucket")
+    
+    return downsampled
 
 
 def plot_price_panel(
@@ -88,19 +198,29 @@ def plot_price_panel(
     nbbo: pl.DataFrame | None,
     show_trades: bool = True,
     show_nbbo: bool = True,
+    show_mid_price: bool = True,
     show_vwap: bool = False,
     symbol: str | None = None,
+    start_time: datetime | None = None,
+    end_time: datetime | None = None,
+    min_trade_size: int | None = None,
+    yaxis_range: tuple[float, float] | None = None,
 ) -> go.Figure:
     """
-    Plot price panel with bid/ask/mid and trade prints colored by at bid/at ask.
+    Plot price panel with bid/ask/mid and trade prints.
     
     Args:
         trades: Trades DataFrame (optional)
         nbbo: NBBO DataFrame (optional)
         show_trades: Whether to show trades
         show_nbbo: Whether to show NBBO bid/ask/mid
+        show_mid_price: Whether to show mid price line
         show_vwap: Whether to show VWAP
         symbol: Optional symbol name for title
+        start_time: Start time for downsampling calculation
+        end_time: End time for downsampling calculation
+        min_trade_size: Minimum trade size to display (None = all)
+        yaxis_range: Optional tuple (min, max) to set fixed y-axis range for synchronization
         
     Returns:
         Plotly figure
@@ -114,50 +234,60 @@ def plot_price_panel(
                 f"nbbo={nbbo is not None and len(nbbo) > 0 if nbbo is not None else False}, "
                 f"show_trades={show_trades}, show_nbbo={show_nbbo}")
     
+    # Filter trades by size if requested
+    if trades is not None and len(trades) > 0 and min_trade_size is not None and "size" in trades.columns:
+        trades = trades.filter(pl.col("size") >= min_trade_size)
+        logger.info(f"Filtered trades by size >= {min_trade_size}: {len(trades):,} remaining")
+    
     # Add NBBO lines
     if nbbo is not None and len(nbbo) > 0 and show_nbbo:
         try:
-            # Use all NBBO data - convert to pandas for plotting
-            nbbo_pd = nbbo.to_pandas()
+            # Downsample NBBO adaptively based on time window
+            nbbo_viz = downsample_data(nbbo, "ts_event", max_points=None, start_time=start_time, end_time=end_time, data_type="nbbo")
+            logger.info(f"Downsampled NBBO: {len(nbbo):,} -> {len(nbbo_viz):,} points")
+            
+            # Convert to pandas for plotting
+            nbbo_pd = nbbo_viz.to_pandas()
             
             # Check required columns
             if "best_bid" not in nbbo_pd.columns or "best_ask" not in nbbo_pd.columns:
                 logger.warning(f"NBBO missing required columns. Available: {nbbo_pd.columns.tolist()}")
             else:
-                # Best Bid
-                fig.add_trace(go.Scatter(
+                # Best Bid - use Scattergl for WebGL rendering
+                fig.add_trace(go.Scattergl(
                     x=nbbo_pd["ts_event"],
                     y=nbbo_pd["best_bid"],
                     mode="lines",
                     name="Best Bid",
                     line=dict(color="green", width=1.5),
-                    hovertemplate="<b>Bid</b><br>Time: %{x}<br>Price: $%{y:.4f}<extra></extra>",
+                    hovertemplate="Bid: $%{y:.4f}<extra></extra>",
                 ))
                 
-                # Best Ask
-                fig.add_trace(go.Scatter(
+                # Best Ask - use Scattergl for WebGL rendering
+                fig.add_trace(go.Scattergl(
                     x=nbbo_pd["ts_event"],
                     y=nbbo_pd["best_ask"],
                     mode="lines",
                     name="Best Ask",
                     line=dict(color="red", width=1.5),
-                    hovertemplate="<b>Ask</b><br>Time: %{x}<br>Price: $%{y:.4f}<extra></extra>",
+                    hovertemplate="Ask: $%{y:.4f}<extra></extra>",
                 ))
                 
-                # Mid Price
-                if "mid_price" in nbbo_pd.columns:
-                    mid_price = nbbo_pd["mid_price"]
-                else:
-                    mid_price = (nbbo_pd["best_bid"] + nbbo_pd["best_ask"]) / 2
-                
-                fig.add_trace(go.Scatter(
-                    x=nbbo_pd["ts_event"],
-                    y=mid_price,
-                    mode="lines",
-                    name="Mid Price",
-                    line=dict(color="blue", width=1, dash="dash"),
-                    hovertemplate="<b>Mid</b><br>Time: %{x}<br>Price: $%{y:.4f}<extra></extra>",
-                ))
+                # Mid Price - use Scattergl for WebGL rendering (only if enabled)
+                if show_mid_price:
+                    if "mid_price" in nbbo_pd.columns:
+                        mid_price = nbbo_pd["mid_price"]
+                    else:
+                        mid_price = (nbbo_pd["best_bid"] + nbbo_pd["best_ask"]) / 2
+                    
+                    fig.add_trace(go.Scattergl(
+                        x=nbbo_pd["ts_event"],
+                        y=mid_price,
+                        mode="lines",
+                        name="Mid Price",
+                        line=dict(color="blue", width=1, dash="dash"),
+                        hovertemplate="Mid: $%{y:.4f}<extra></extra>",
+                    ))
         except Exception as e:
             logger.error(f"Error adding NBBO traces: {e}")
             import traceback
@@ -168,140 +298,69 @@ def plot_price_panel(
         vwap_df = calculate_vwap(trades)
         vwap_pd = vwap_df.to_pandas()
         
-        fig.add_trace(go.Scatter(
+        fig.add_trace(go.Scattergl(
             x=vwap_pd["time_bucket"],
             y=vwap_pd["vwap"],
             mode="lines",
             name="VWAP",
             line=dict(color="purple", width=2),
-            hovertemplate="<b>VWAP</b><br>Time: %{x}<br>Price: $%{y:.4f}<extra></extra>",
+            hovertemplate="VWAP: $%{y:.4f}<extra></extra>",
         ))
     
-    # Add trades colored by at bid/at ask
+    # Add trades
     if trades is not None and len(trades) > 0 and show_trades:
         try:
-            # Enrich trades with NBBO if available - use all data
-            enriched_pd = None
-            if nbbo is not None and len(nbbo) > 0:
-                try:
-                    logger.info(f"Enriching {len(trades):,} trades with {len(nbbo):,} NBBO records...")
-                    enriched = enrich_trades_with_nbbo(trades, nbbo)
-                    enriched_pd = enriched.to_pandas()
-                    logger.info(f"Enrichment complete. Plotting {len(enriched_pd):,} enriched trades.")
-                except Exception as e:
-                    logger.warning(f"Error enriching trades with NBBO: {e}. Plotting trades without enrichment.")
-                    import traceback
-                    logger.debug(traceback.format_exc())
-                    enriched_pd = None
+            # Downsample trades adaptively based on time window
+            trades_viz = downsample_data(trades, "ts_event", max_points=None, start_time=start_time, end_time=end_time, data_type="trades")
+            logger.info(f"Downsampled trades: {len(trades):,} -> {len(trades_viz):,} points")
             
-            # Color trades: at bid (green), at ask (red), within spread (gray), outside (orange/blue)
-            if enriched_pd is not None and "price_location" in enriched_pd.columns:
-                # At bid
-                at_bid = enriched_pd[enriched_pd["price"] == enriched_pd["best_bid"]]
-                if len(at_bid) > 0:
-                    fig.add_trace(go.Scatter(
-                        x=at_bid["ts_event"],
-                        y=at_bid["price"],
-                        mode="markers",
-                        name="At Bid",
-                        marker=dict(size=4, color="green", opacity=0.7, symbol="triangle-up"),
-                        hovertemplate="<b>Trade @ Bid</b><br>Time: %{x}<br>Price: $%{y:.4f}<extra></extra>",
-                    ))
+            # Plot trades as simple markers
+            trades_pd = trades_viz.to_pandas()
+            if len(trades_pd) > 0:
+                # Prepare hover data - include size if available
+                if "size" in trades_pd.columns:
+                    hover_data = trades_pd["size"]
+                    hovertemplate = "Trade: $%{y:.4f}<br>Size: %{customdata:,}<extra></extra>"
+                else:
+                    hover_data = None
+                    hovertemplate = "Trade: $%{y:.4f}<extra></extra>"
                 
-                # At ask
-                at_ask = enriched_pd[enriched_pd["price"] == enriched_pd["best_ask"]]
-                if len(at_ask) > 0:
-                    fig.add_trace(go.Scatter(
-                        x=at_ask["ts_event"],
-                        y=at_ask["price"],
-                        mode="markers",
-                        name="At Ask",
-                        marker=dict(size=4, color="red", opacity=0.7, symbol="triangle-down"),
-                        hovertemplate="<b>Trade @ Ask</b><br>Time: %{x}<br>Price: $%{y:.4f}<extra></extra>",
-                    ))
-                
-                # Within spread (but not at bid/ask)
-                within = enriched_pd[
-                    (enriched_pd["price_location"] == "within_spread") &
-                    (enriched_pd["price"] != enriched_pd["best_bid"]) &
-                    (enriched_pd["price"] != enriched_pd["best_ask"])
-                ]
-                if len(within) > 0:
-                    fig.add_trace(go.Scatter(
-                        x=within["ts_event"],
-                        y=within["price"],
-                        mode="markers",
-                        name="Within Spread",
-                        marker=dict(size=3, color="gray", opacity=0.5),
-                        hovertemplate="<b>Trade</b><br>Time: %{x}<br>Price: $%{y:.4f}<extra></extra>",
-                    ))
-                
-                # Below bid
-                below = enriched_pd[enriched_pd["price_location"] == "below_bid"]
-                if len(below) > 0:
-                    fig.add_trace(go.Scatter(
-                        x=below["ts_event"],
-                        y=below["price"],
-                        mode="markers",
-                        name="Below Bid",
-                        marker=dict(size=3, color="blue", opacity=0.6),
-                        hovertemplate="<b>Trade Below Bid</b><br>Time: %{x}<br>Price: $%{y:.4f}<extra></extra>",
-                    ))
-                
-                # Above ask
-                above = enriched_pd[enriched_pd["price_location"] == "above_ask"]
-                if len(above) > 0:
-                    fig.add_trace(go.Scatter(
-                        x=above["ts_event"],
-                        y=above["price"],
-                        mode="markers",
-                        name="Above Ask",
-                        marker=dict(size=3, color="orange", opacity=0.6),
-                        hovertemplate="<b>Trade Above Ask</b><br>Time: %{x}<br>Price: $%{y:.4f}<extra></extra>",
-                    ))
-            else:
-                # Fallback: just plot all trades (without enrichment)
-                try:
-                    # Use all trades data
-                    trades_pd = trades.to_pandas()
-                    if len(trades_pd) > 0:
-                        fig.add_trace(go.Scatter(
-                            x=trades_pd["ts_event"],
-                            y=trades_pd["price"],
-                            mode="markers",
-                            name="Trades",
-                            marker=dict(size=3, color="black", opacity=0.5),
-                            hovertemplate="<b>Trade</b><br>Time: %{x}<br>Price: $%{y:.4f}<extra></extra>",
-                        ))
-                except Exception as e:
-                    logger.error(f"Error plotting trades fallback: {e}")
-                    import traceback
-                    logger.debug(traceback.format_exc())
+                fig.add_trace(go.Scattergl(
+                    x=trades_pd["ts_event"],
+                    y=trades_pd["price"],
+                    mode="markers",
+                    name="Trades",
+                    marker=dict(size=3, color="black", opacity=0.5),
+                    customdata=hover_data,
+                    hovertemplate=hovertemplate,
+                ))
         except Exception as e:
             logger.error(f"Error adding trade traces: {e}")
             import traceback
             logger.debug(traceback.format_exc())
-            # Try simple fallback
-            try:
-                # Use all trades data
-                trades_pd = trades.to_pandas()
-                if len(trades_pd) > 0 and "ts_event" in trades_pd.columns and "price" in trades_pd.columns:
-                    fig.add_trace(go.Scatter(
-                        x=trades_pd["ts_event"],
-                        y=trades_pd["price"],
-                        mode="markers",
-                        name="Trades",
-                        marker=dict(size=3, color="black", opacity=0.5),
-                        hovertemplate="<b>Trade</b><br>Time: %{x}<br>Price: $%{y:.4f}<extra></extra>",
-                    ))
-            except Exception as e2:
-                logger.error(f"Error in simple trade fallback: {e2}")
-                import traceback
-                logger.debug(traceback.format_exc())
     
     title = "Price Panel"
     if symbol:
         title = f"{symbol} - {title}"
+    
+    yaxis_config = dict(
+        autorange=True if yaxis_range is None else False,
+        fixedrange=False,  # Allow zooming on y-axis too
+    )
+    if yaxis_range is not None:
+        yaxis_config["range"] = yaxis_range
+    
+    xaxis_config = dict(
+        rangeslider=dict(visible=False),  # Hide range slider for cleaner look
+    )
+    
+    # Set initial x-axis range if start_time and end_time provided (for synchronization)
+    if start_time is not None and end_time is not None:
+        # Convert to milliseconds for Plotly
+        xaxis_config["range"] = [
+            start_time.timestamp() * 1000,
+            end_time.timestamp() * 1000
+        ]
     
     fig.update_layout(
         title=title,
@@ -310,6 +369,10 @@ def plot_price_panel(
         hovermode="x unified",
         height=600,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        # Enable auto-scaling of y-axis when zooming on x-axis
+        yaxis=yaxis_config,
+        xaxis=xaxis_config,
+        uirevision="sync_time",  # Use same uirevision for synchronization
     )
     
     return fig
@@ -331,26 +394,35 @@ def plot_spread_bps_timeline(
     Returns:
         Plotly figure
     """
-    nbbo_pd = nbbo.to_pandas()
-    
-    # Calculate spread in bps
-    if "spread" not in nbbo_pd.columns:
-        nbbo_pd["spread"] = nbbo_pd["best_ask"] - nbbo_pd["best_bid"]
+    # Calculate spread in bps BEFORE downsampling (need accurate values)
+    if "spread" not in nbbo.columns:
+        nbbo = nbbo.with_columns([
+            (pl.col("best_ask") - pl.col("best_bid")).alias("spread"),
+        ])
     
     # Calculate mid price for bps calculation
-    if "mid_price" not in nbbo_pd.columns:
-        nbbo_pd["mid_price"] = (nbbo_pd["best_bid"] + nbbo_pd["best_ask"]) / 2
+    if "mid_price" not in nbbo.columns:
+        nbbo = nbbo.with_columns([
+            ((pl.col("best_bid") + pl.col("best_ask")) / 2).alias("mid_price"),
+        ])
     
     # Spread in bps = (spread / mid_price) * 10000
-    nbbo_pd["spread_bps"] = (nbbo_pd["spread"] / nbbo_pd["mid_price"]) * 10000
+    if "spread_bps" not in nbbo.columns:
+        nbbo = nbbo.with_columns([
+            ((pl.col("spread") / pl.col("mid_price")) * 10000).alias("spread_bps"),
+        ])
     
     if show_churn:
         # Create subplot with secondary y-axis for churn
         fig = make_subplots(specs=[[{"secondary_y": True}]])
         
         # Spread in bps
+        # Downsample for better performance (adaptive)
+        nbbo_viz = downsample_data(nbbo, "ts_event", max_points=None, data_type="nbbo")
+        nbbo_pd = nbbo_viz.to_pandas()
+        
         fig.add_trace(
-            go.Scatter(
+            go.Scattergl(
                 x=nbbo_pd["ts_event"],
                 y=nbbo_pd["spread_bps"],
                 mode="lines",
@@ -377,8 +449,20 @@ def plot_spread_bps_timeline(
         fig.update_yaxes(title_text="Spread (bps)", secondary_y=False)
         fig.update_yaxes(title_text="Churn (updates/min)", secondary_y=True)
     else:
+        # Downsample for better performance (adaptive)
+        nbbo_viz = downsample_data(nbbo, "ts_event", max_points=None, data_type="nbbo")
+        nbbo_pd = nbbo_viz.to_pandas()
+        
+        # Ensure spread_bps exists (should already be calculated)
+        if "spread_bps" not in nbbo_pd.columns:
+            if "spread" not in nbbo_pd.columns:
+                nbbo_pd["spread"] = nbbo_pd["best_ask"] - nbbo_pd["best_bid"]
+            if "mid_price" not in nbbo_pd.columns:
+                nbbo_pd["mid_price"] = (nbbo_pd["best_bid"] + nbbo_pd["best_ask"]) / 2
+            nbbo_pd["spread_bps"] = (nbbo_pd["spread"] / nbbo_pd["mid_price"]) * 10000
+        
         fig = go.Figure()
-        fig.add_trace(go.Scatter(
+        fig.add_trace(go.Scattergl(
             x=nbbo_pd["ts_event"],
             y=nbbo_pd["spread_bps"],
             mode="lines",
@@ -463,66 +547,6 @@ def plot_spread_histogram(
     return fig
 
 
-def plot_slippage_histogram(
-    enriched_trades: pl.DataFrame,
-    symbol: str | None = None,
-) -> go.Figure:
-    """
-    Plot histogram of slippage values.
-    
-    Args:
-        enriched_trades: Enriched trades DataFrame
-        symbol: Optional symbol name for title
-        
-    Returns:
-        Plotly figure
-    """
-    enriched = calculate_slippage(enriched_trades)
-    enriched_pd = enriched.to_pandas()
-    
-    fig = px.histogram(
-        enriched_pd,
-        x="slippage_bps",
-        nbins=50,
-        title=f"{symbol} - Slippage Distribution" if symbol else "Slippage Distribution",
-        labels={"slippage_bps": "Slippage (bps)", "count": "Frequency"},
-    )
-    
-    fig.update_layout(height=400)
-    return fig
-
-
-def get_worst_slippage_trades(
-    enriched_trades: pl.DataFrame,
-    top_n: int = 20,
-) -> pl.DataFrame:
-    """
-    Get worst slippage trades (most negative slippage).
-    
-    Args:
-        enriched_trades: Enriched trades DataFrame
-        top_n: Number of worst trades to return
-        
-    Returns:
-        DataFrame with worst slippage trades
-    """
-    enriched = calculate_slippage(enriched_trades)
-    
-    worst = enriched.sort("slippage_bps").head(top_n).select([
-        "ts_event",
-        "symbol",
-        "price",
-        "size",
-        "best_bid",
-        "best_ask",
-        "mid_price",
-        "slippage",
-        "slippage_bps",
-    ])
-    
-    return worst
-
-
 def get_highest_churn_minutes(
     nbbo: pl.DataFrame,
     top_n: int = 20,
@@ -546,59 +570,3 @@ def get_highest_churn_minutes(
     return highest
 
 
-def enrich_trades_with_nbbo(
-    trades: pl.DataFrame,
-    nbbo: pl.DataFrame,
-) -> pl.DataFrame:
-    """
-    Enrich trades with NBBO data using ASOF join.
-    
-    Args:
-        trades: Trades DataFrame
-        nbbo: NBBO DataFrame
-        
-    Returns:
-        Enriched trades DataFrame
-    """
-    # Ensure both have ts_event and symbol columns
-    if "ts_event" not in trades.columns or "ts_event" not in nbbo.columns:
-        raise ValueError("Both DataFrames must have 'ts_event' column")
-    
-    if "symbol" not in trades.columns or "symbol" not in nbbo.columns:
-        raise ValueError("Both DataFrames must have 'symbol' column")
-    
-    # Sort by timestamp and symbol for ASOF join
-    # Polars requires data to be sorted by the join key for ASOF joins
-    # Use lazy evaluation for better performance
-    import warnings
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", message=".*Sortedness of columns cannot be checked.*")
-        
-        trades_sorted = trades.sort(["symbol", "ts_event"])
-        nbbo_sorted = nbbo.sort(["symbol", "ts_event"])
-        
-        # Perform ASOF join (backward - get most recent NBBO at or before trade time)
-        # Note: When using 'by' parameter, Polars expects data sorted by [by_cols, on_col]
-        enriched = trades_sorted.join_asof(
-            nbbo_sorted,
-            on="ts_event",
-            by="symbol",
-            strategy="backward",
-        )
-    
-    # Calculate derived metrics
-    if "best_bid" in enriched.columns and "best_ask" in enriched.columns:
-        enriched = enriched.with_columns([
-            ((pl.col("price") - pl.col("best_bid")) / pl.col("best_bid") * 100).alias("price_vs_bid_pct"),
-            ((pl.col("price") - pl.col("best_ask")) / pl.col("best_ask") * 100).alias("price_vs_ask_pct"),
-            ((pl.col("price") - (pl.col("best_bid") + pl.col("best_ask")) / 2) / 
-             ((pl.col("best_bid") + pl.col("best_ask")) / 2) * 100).alias("price_vs_mid_pct"),
-            pl.when(pl.col("price") < pl.col("best_bid"))
-              .then(pl.lit("below_bid"))
-              .when(pl.col("price") > pl.col("best_ask"))
-              .then(pl.lit("above_ask"))
-              .otherwise(pl.lit("within_spread"))
-              .alias("price_location"),
-        ])
-    
-    return enriched

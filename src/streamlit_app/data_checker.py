@@ -266,3 +266,93 @@ def suggest_alternatives(
     
     return suggestions
 
+
+def check_symbol_availability_across_sources(
+    data_root: Path,
+    data_sources: dict[str, Path],
+    trade_date: date,
+    symbols: list[str],
+    data_type: DataType = "trades",
+) -> dict[str, dict[str, bool]]:
+    """
+    Check symbol availability across all data sources.
+    
+    Args:
+        data_root: Root data directory
+        data_sources: Dictionary of data source names to paths
+        trade_date: Trade date to check
+        symbols: List of symbols to check
+        data_type: Type of data (trades, quotes, nbbo)
+        
+    Returns:
+        Dictionary mapping symbol to dict of source availability:
+        {
+            "AAPL": {"taq": True, "alpaca": False},
+            "MSFT": {"taq": True, "alpaca": True},
+        }
+    """
+    availability = {}
+    
+    for symbol in symbols:
+        availability[symbol] = {}
+        for source_name in data_sources.keys():
+            available = check_data_available(
+                data_root, source_name, trade_date, symbol, data_type
+            )
+            availability[symbol][source_name] = available
+    
+    return availability
+
+
+def find_common_sources_for_symbols(
+    data_root: Path,
+    data_sources: dict[str, Path],
+    trade_date: date,
+    symbols: list[str],
+    data_type: DataType = "trades",
+) -> dict[str, list[str]]:
+    """
+    Find which data sources have all requested symbols available.
+    
+    Args:
+        data_root: Root data directory
+        data_sources: Dictionary of data source names to paths
+        trade_date: Trade date to check
+        symbols: List of symbols to check
+        data_type: Type of data
+        
+    Returns:
+        Dictionary with:
+        {
+            "sources_with_all": ["taq", "alpaca"],  # Sources that have all symbols
+            "sources_with_some": ["taq"],  # Sources that have some symbols
+            "missing_symbols": {"taq": ["XYZ"], "alpaca": []},  # Missing per source
+        }
+    """
+    availability = check_symbol_availability_across_sources(
+        data_root, data_sources, trade_date, symbols, data_type
+    )
+    
+    sources_with_all = []
+    sources_with_some = []
+    missing_symbols = {source: [] for source in data_sources.keys()}
+    
+    for source_name in data_sources.keys():
+        missing = [
+            symbol for symbol in symbols
+            if not availability[symbol].get(source_name, False)
+        ]
+        
+        if not missing:
+            sources_with_all.append(source_name)
+        elif len(missing) < len(symbols):
+            sources_with_some.append(source_name)
+        
+        missing_symbols[source_name] = missing
+    
+    return {
+        "sources_with_all": sources_with_all,
+        "sources_with_some": sources_with_some,
+        "missing_symbols": missing_symbols,
+    }
+

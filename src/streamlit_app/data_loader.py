@@ -16,17 +16,17 @@ def load_trades(
     data_root: Path,
     data_source: str,
     trade_date: date,
-    symbol: Optional[str] = None,
+    symbol: Optional[str | list[str]] = None,
     timezone: str = "America/New_York",
 ) -> Optional[pl.DataFrame]:
     """
-    Load trades data for a given date and optional symbol.
+    Load trades data for a given date and optional symbol(s).
     
     Args:
         data_root: Root data directory
         data_source: Data source name
         trade_date: Trade date
-        symbol: Optional symbol to filter by
+        symbol: Optional symbol (str) or list of symbols (list[str]) to filter by
         timezone: Timezone to convert timestamps to
         
     Returns:
@@ -43,7 +43,10 @@ def load_trades(
     parquet_files = []
     
     if symbol:
-        # Find symbol directory
+        # Handle both single symbol (str) and multiple symbols (list)
+        symbols_to_load = symbol if isinstance(symbol, list) else [symbol]
+        
+        # Find symbol directories
         symbol_dirs = list(date_dir.glob("symbol=*"))
         for sym_dir in symbol_dirs:
             sym_name = sym_dir.name.replace("symbol=", "")
@@ -54,9 +57,9 @@ def load_trades(
             else:
                 extracted_symbol = sym_name
             
-            if extracted_symbol == symbol:
-                parquet_files = list(sym_dir.glob("*.parquet")) or list(sym_dir.glob("**/*.parquet"))
-                break
+            if extracted_symbol in symbols_to_load:
+                files = list(sym_dir.glob("*.parquet")) or list(sym_dir.glob("**/*.parquet"))
+                parquet_files.extend(files)
     else:
         # Load all symbols
         parquet_files = list(date_dir.glob("**/*.parquet"))
@@ -143,17 +146,17 @@ def load_nbbo(
     data_root: Path,
     data_source: str,
     trade_date: date,
-    symbol: Optional[str] = None,
+    symbol: Optional[str | list[str]] = None,
     timezone: str = "America/New_York",
 ) -> Optional[pl.DataFrame]:
     """
-    Load NBBO data for a given date and optional symbol.
+    Load NBBO data for a given date and optional symbol(s).
     
     Args:
         data_root: Root data directory
         data_source: Data source name
         trade_date: Trade date
-        symbol: Optional symbol to filter by
+        symbol: Optional symbol (str) or list of symbols (list[str]) to filter by
         timezone: Timezone to convert timestamps to
         
     Returns:
@@ -170,7 +173,10 @@ def load_nbbo(
     parquet_files = []
     
     if symbol:
-        # Find symbol directory
+        # Handle both single symbol (str) and multiple symbols (list)
+        symbols_to_load = symbol if isinstance(symbol, list) else [symbol]
+        
+        # Find symbol directories
         symbol_dirs = list(date_dir.glob("symbol=*"))
         for sym_dir in symbol_dirs:
             sym_name = sym_dir.name.replace("symbol=", "")
@@ -181,9 +187,9 @@ def load_nbbo(
             else:
                 extracted_symbol = sym_name
             
-            if extracted_symbol == symbol:
-                parquet_files = list(sym_dir.glob("*.parquet")) or list(sym_dir.glob("**/*.parquet"))
-                break
+            if extracted_symbol in symbols_to_load:
+                files = list(sym_dir.glob("*.parquet")) or list(sym_dir.glob("**/*.parquet"))
+                parquet_files.extend(files)
     else:
         # Load all symbols
         parquet_files = list(date_dir.glob("**/*.parquet"))
