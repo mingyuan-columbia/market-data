@@ -205,6 +205,7 @@ def plot_price_panel(
     end_time: datetime | None = None,
     min_trade_size: int | None = None,
     yaxis_range: tuple[float, float] | None = None,
+    source: str | None = None,
 ) -> go.Figure:
     """
     Plot price panel with bid/ask/mid and trade prints.
@@ -221,6 +222,7 @@ def plot_price_panel(
         end_time: End time for downsampling calculation
         min_trade_size: Minimum trade size to display (None = all)
         yaxis_range: Optional tuple (min, max) to set fixed y-axis range for synchronization
+        source: Optional data source name (e.g., "taq", "alpaca") to include in title
         
     Returns:
         Plotly figure
@@ -343,18 +345,21 @@ def plot_price_panel(
     if symbol:
         title = f"{symbol} - {title}"
     
-    yaxis_config = dict(
-        autorange=True if yaxis_range is None else False,
-        fixedrange=False,  # Allow zooming on y-axis too
-    )
-    if yaxis_range is not None:
-        yaxis_config["range"] = yaxis_range
-    
+    # Configure axes to allow zooming on both axes
+    # - autorange=True: enables automatic y-axis adjustment
+    # - fixedrange=False: allows zooming/panning on both axes
+    # - uirevision="keep": preserves zoom state across Streamlit reruns
     xaxis_config = dict(
         rangeslider=dict(visible=False),  # Hide range slider for cleaner look
+        fixedrange=False,  # Allow x-axis zooming/panning
     )
     
-    # Set initial x-axis range if start_time and end_time provided (for synchronization)
+    yaxis_config = dict(
+        autorange=True,  # Enable autorange for automatic y-axis adjustment
+        fixedrange=False,  # Allow y-axis zooming/panning
+    )
+    
+    # Set initial x-axis range if start_time and end_time provided
     if start_time is not None and end_time is not None:
         # Convert to milliseconds for Plotly
         xaxis_config["range"] = [
@@ -369,10 +374,9 @@ def plot_price_panel(
         hovermode="x unified",
         height=600,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        # Enable auto-scaling of y-axis when zooming on x-axis
-        yaxis=yaxis_config,
         xaxis=xaxis_config,
-        uirevision="sync_time",  # Use same uirevision for synchronization
+        yaxis=yaxis_config,
+        uirevision="keep",  # Preserves zoom/pan state across Streamlit reruns
     )
     
     return fig

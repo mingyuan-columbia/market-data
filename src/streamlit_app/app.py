@@ -32,7 +32,6 @@ from streamlit_app.visualizations import (
     plot_price_panel,
     plot_spread_bps_timeline,
     plot_churn_bar_chart,
-    plot_spread_histogram,
     get_highest_churn_minutes,
 )
 
@@ -225,6 +224,12 @@ def main():
         index=0,
     )
     
+    # Reset symbol selection flag if mode changed
+    if "prev_symbol_mode" in st.session_state:
+        if st.session_state.prev_symbol_mode != symbol_mode:
+            st.session_state.symbol_selection_applied = False
+    st.session_state.prev_symbol_mode = symbol_mode
+    
     # Find available symbols across all sources for this date
     all_available_symbols = set()
     for source in available_sources:
@@ -252,16 +257,44 @@ def main():
             index=default_idx,
         )]
     else:
-        # Multiple symbols selection
-        selected_symbols = st.sidebar.multiselect(
-            "Symbols",
-            options=all_available_symbols,
-            default=["AAPL"] if "AAPL" in all_available_symbols else all_available_symbols[:1],
-        )
+        # Multiple symbols selection - use form to batch input
+        # Initialize session state if needed
+        if "selected_symbols" not in st.session_state:
+            default_symbols = ["AAPL"] if "AAPL" in all_available_symbols else all_available_symbols[:1]
+            st.session_state.selected_symbols = default_symbols
+            st.session_state.symbol_selection_applied = True
+        
+        # Get current selection from session state
+        current_selection = st.session_state.get("selected_symbols", [])
+        # Filter to only include currently available symbols
+        current_selection = [s for s in current_selection if s in all_available_symbols]
+        if not current_selection:
+            current_selection = all_available_symbols[:1]
+            st.session_state.selected_symbols = current_selection
+        
+        with st.sidebar.form("symbol_selection_form"):
+            selected_symbols = st.multiselect(
+                "Symbols",
+                options=all_available_symbols,
+                default=current_selection,
+                help="Select multiple symbols. Click 'Apply Symbols' to update plots.",
+            )
+            
+            apply_symbols = st.form_submit_button("Apply Symbols", type="primary")
+            
+            if apply_symbols:
+                if not selected_symbols:
+                    st.sidebar.warning("Please select at least one symbol")
+                else:
+                    st.session_state.selected_symbols = selected_symbols
+                    st.session_state.symbol_selection_applied = True
+        
+        # Always use session state values after form
+        selected_symbols = st.session_state.get("selected_symbols", [])
         
         if not selected_symbols:
-            st.sidebar.warning("Please select at least one symbol")
-            st.info("Please select one or more symbols to visualize.")
+            st.sidebar.warning("Please select at least one symbol and click 'Apply Symbols'")
+            st.info("Please select one or more symbols and click 'Apply Symbols' to visualize.")
             st.stop()
     
     # ===== STEP 3: DETERMINE DATA SOURCES =====
@@ -531,11 +564,17 @@ def main():
             st.session_state.duration_minutes = duration_minutes
             
             # Also show slider for visual reference
+            # Ensure values are within bounds
+            slider_start = max(min_dt, min(input_start, max_dt))
+            slider_end = max(min_dt, min(input_end, max_dt))
+            if slider_end <= slider_start:
+                slider_end = min(slider_start + timedelta(minutes=1), max_dt)
+            
             time_range = st.sidebar.slider(
                 "Time Range (Slider)",
                 min_value=min_dt,
                 max_value=max_dt,
-                value=(input_start, input_end),
+                value=(slider_start, slider_end),
                 format="HH:mm:ss",
             )
             
@@ -721,7 +760,7 @@ def main():
         if table_data:
             import pandas as pd
             df = pd.DataFrame(table_data)
-            st.dataframe(df, width='stretch', hide_index=True, use_container_width=False)
+            st.dataframe(df, width='stretch', hide_index=True)
     elif len(selected_symbols) > 1:
         # Multiple symbols - create a table
         table_data = []
@@ -759,7 +798,7 @@ def main():
         if table_data:
             import pandas as pd
             df = pd.DataFrame(table_data)
-            st.dataframe(df, width='stretch', hide_index=True, use_container_width=False)
+            st.dataframe(df, width='stretch', hide_index=True)
     else:
         # Single symbol, single source - one row
         col1, col2, col3, col4 = st.columns(4)
@@ -796,7 +835,7 @@ def main():
     # Filter data by time range for dual-source mode (needed for all panels)
     filtered_sources_data = {}
     if show_dual_source and len(selected_symbols) == 1 and len(selected_sources) >= 2:
-        all_prices = []  # Collect all price values for y-axis sync
+        all_prices = []  # Collect all price values for shared y-axis range
         
         for source in selected_sources:
             source_trades = data_by_source.get(source, {}).get("trades")
@@ -859,36 +898,32 @@ def main():
                 try:
                     # If dual source mode and single symbol, show side-by-side plots
                     if show_dual_source and len(selected_symbols) == 1 and len(selected_sources) >= 2:
-                        # Create plots with synchronized y-axis
-                        source_cols = st.columns(len(selected_sources))
-                        for idx, source in enumerate(selected_sources):
-                            with source_cols[idx]:
-                                st.subheader(f"Price Panel - {source.upper()}")
-                                
-                                source_trades = filtered_sources_data[source]["trades"]
-                                source_nbbo = filtered_sources_data[source]["nbbo"]
-                                
-                                # Create plot for this source with shared y-axis range
-                                fig_price = plot_price_panel(
-                                    source_trades,
-                                    source_nbbo,
-                                    show_trades=show_trades,
-                                    show_nbbo=show_nbbo,
-                                    show_mid_price=show_mid_price,
-                                    show_vwap=show_vwap,
-                                    symbol=selected_symbols[0],
-                                    start_time=start_time,
-                                    end_time=end_time,
-                                    min_trade_size=min_trade_size,
-                                    yaxis_range=yaxis_range,
-                                )
-                                
-                                if len(fig_price.data) > 0:
-                                    st.plotly_chart(fig_price, width='stretch')
-                                else:
-                                    st.info(f"No data for {source}")
+                        # Dual source mode - show one plot per source in separate rows
+                        for source in selected_sources:
+                            source_trades = filtered_sources_data[source]["trades"]
+                            source_nbbo = filtered_sources_data[source]["nbbo"]
+                            
+                            # Create plot for this source with shared y-axis range
+                            fig_price = plot_price_panel(
+                                source_trades,
+                                source_nbbo,
+                                show_trades=show_trades,
+                                show_nbbo=show_nbbo,
+                                show_mid_price=show_mid_price,
+                                show_vwap=show_vwap,
+                                symbol=f"{selected_symbols[0]} ({source.upper()})",
+                                start_time=start_time,
+                                end_time=end_time,
+                                min_trade_size=min_trade_size,
+                                yaxis_range=yaxis_range,
+                            )
+                            
+                            if len(fig_price.data) > 0:
+                                st.plotly_chart(fig_price, width='stretch')
+                            else:
+                                st.info(f"No data for {source}")
                     elif len(selected_symbols) > 1:
-                        # Multiple symbols mode - show one plot per symbol with synchronized x-axis
+                        # Multiple symbols mode - show one plot per symbol
                         # Filter data by time range first
                         filtered_trades = trades_for_viz
                         filtered_nbbo = nbbo_for_viz
@@ -957,136 +992,15 @@ def main():
                                 st.info(f"  - Has trades: {has_symbol_trades}, Has NBBO: {has_symbol_nbbo}")
                                 continue
                             
-                            # Set uirevision for x-axis synchronization
-                            fig.update_layout(
-                                uirevision="sync_time",  # Same uirevision for all plots to sync x-axis
-                            )
-                            
                             symbol_figs.append((symbol, fig))
                         
-                        # Display plots in rows (one per symbol) with synchronized x-axis
+                        # Display plots in rows (one per symbol)
                         if symbol_figs:
-                            # Store plot keys for synchronization
-                            plot_keys = []
-                            
                             for symbol, fig in symbol_figs:
                                 if len(fig.data) > 0:
-                                    plot_key = f"price_plot_{symbol}"
-                                    plot_keys.append(plot_key)
-                                    st.plotly_chart(
-                                        fig,
-                                        width='stretch',
-                                        key=plot_key,
-                                    )
+                                    st.plotly_chart(fig, width='stretch')
                                 else:
                                     st.info(f"No data for {symbol}")
-                            
-                            # Add JavaScript to synchronize plots
-                            if len(plot_keys) > 1:
-                                import streamlit.components.v1 as components
-                                
-                                sync_script = """
-                                <script>
-                                (function() {
-                                    let syncing = false;
-                                    const plots = [];
-                                    
-                                    function findPlotlyPlots() {
-                                        // Find all Plotly plot containers
-                                        const containers = document.querySelectorAll('[data-testid="stPlotlyChart"]');
-                                        plots.length = 0;
-                                        
-                                        containers.forEach(function(container) {
-                                            // Find the actual Plotly div
-                                            const plotlyDiv = container.querySelector('.plotly');
-                                            if (plotlyDiv && typeof Plotly !== 'undefined') {
-                                                // Check if plot is already initialized
-                                                if (plotlyDiv.data && plotlyDiv.layout) {
-                                                    plots.push(plotlyDiv);
-                                                }
-                                            }
-                                        });
-                                        
-                                        return plots.length >= 2;
-                                    }
-                                    
-                                    function setupSync() {
-                                        if (!findPlotlyPlots()) {
-                                            setTimeout(setupSync, 300);
-                                            return;
-                                        }
-                                        
-                                        // Set up event listeners for each plot
-                                        plots.forEach(function(plotDiv) {
-                                            // Remove existing listeners if any
-                                            plotDiv.removeAllListeners('plotly_relayout');
-                                            
-                                            plotDiv.on('plotly_relayout', function(eventData) {
-                                                if (syncing) return;
-                                                
-                                                // Check if x-axis range changed
-                                                let xRange = null;
-                                                if (eventData['xaxis.range[0]'] !== undefined && 
-                                                    eventData['xaxis.range[1]'] !== undefined) {
-                                                    xRange = [
-                                                        eventData['xaxis.range[0]'],
-                                                        eventData['xaxis.range[1]']
-                                                    ];
-                                                } else if (eventData['xaxis.range'] !== undefined) {
-                                                    xRange = eventData['xaxis.range'];
-                                                }
-                                                
-                                                if (xRange) {
-                                                    syncing = true;
-                                                    
-                                                    // Update all other plots
-                                                    plots.forEach(function(otherPlot) {
-                                                        if (otherPlot !== plotDiv) {
-                                                            try {
-                                                                Plotly.relayout(otherPlot, {
-                                                                    'xaxis.range': xRange
-                                                                });
-                                                            } catch(e) {
-                                                                console.log('Sync error:', e);
-                                                            }
-                                                        }
-                                                    });
-                                                    
-                                                    setTimeout(function() { syncing = false; }, 150);
-                                                }
-                                            });
-                                        });
-                                    }
-                                    
-                                    // Wait for Plotly to be available
-                                    function waitForPlotly() {
-                                        if (typeof Plotly === 'undefined') {
-                                            setTimeout(waitForPlotly, 100);
-                                            return;
-                                        }
-                                        
-                                        // Start setup after plots are rendered
-                                        setTimeout(setupSync, 800);
-                                        
-                                        // Also try to setup when new plots are added
-                                        const observer = new MutationObserver(function() {
-                                            if (plots.length < 2) {
-                                                setTimeout(setupSync, 200);
-                                            }
-                                        });
-                                        
-                                        observer.observe(document.body, {
-                                            childList: true,
-                                            subtree: true
-                                        });
-                                    }
-                                    
-                                    waitForPlotly();
-                                })();
-                                </script>
-                                """
-                                
-                                components.html(sync_script, height=0)
                         else:
                             st.info("No data available for selected symbols")
                     else:
@@ -1127,13 +1041,11 @@ def main():
     else:
         st.info("No data available for price panel")
     
-    # Spread & Churn panel
-    st.header("Spread & Churn")
+    # Spread panel
+    st.header("Spread")
     
     if show_dual_source and len(selected_symbols) == 1 and len(selected_sources) >= 2:
         # Dual source mode - show side-by-side for each source
-        # Spread (bps) Over Time
-        st.subheader("Spread (bps) Over Time")
         spread_cols = st.columns(len(selected_sources))
         for idx, source in enumerate(selected_sources):
             with spread_cols[idx]:
@@ -1147,9 +1059,52 @@ def main():
                     st.plotly_chart(fig_spread_bps, width='stretch')
                 else:
                     st.info(f"No NBBO data for {source}")
-        
-        # Quote Churn
-        st.subheader("Quote Churn")
+    else:
+        # Single source mode
+        if len(selected_symbols) > 1:
+            # Multiple symbols - show one plot per symbol
+            # Filter data by time range first
+            filtered_nbbo = nbbo_for_viz
+            if filtered_nbbo is not None and len(filtered_nbbo) > 0 and start_time is not None and end_time is not None:
+                try:
+                    start_ts = int(start_time.timestamp() * 1_000_000)
+                    end_ts = int(end_time.timestamp() * 1_000_000)
+                    filtered_nbbo = filtered_nbbo.filter(
+                        (pl.col("ts_event").dt.timestamp("us") >= start_ts) &
+                        (pl.col("ts_event").dt.timestamp("us") <= end_ts)
+                    )
+                except Exception:
+                    pass
+            
+            for symbol in selected_symbols:
+                if filtered_nbbo is not None and len(filtered_nbbo) > 0 and "symbol" in filtered_nbbo.columns:
+                    symbol_nbbo = filtered_nbbo.filter(pl.col("symbol") == symbol)
+                    if len(symbol_nbbo) > 0:
+                        fig_spread_bps = plot_spread_bps_timeline(
+                            symbol_nbbo,
+                            show_churn=False,
+                            symbol=symbol,
+                        )
+                        st.plotly_chart(fig_spread_bps, width='stretch')
+                    else:
+                        st.info(f"No NBBO data for {symbol}")
+        else:
+            # Single symbol
+            if nbbo is not None and len(nbbo) > 0:
+                fig_spread_bps = plot_spread_bps_timeline(
+                    nbbo,
+                    show_churn=False,
+                    symbol=selected_symbols[0] if len(selected_symbols) == 1 else None,
+                )
+                st.plotly_chart(fig_spread_bps, width='stretch')
+            else:
+                st.info("NBBO data not available")
+    
+    # Churn panel
+    st.header("Churn")
+    
+    if show_dual_source and len(selected_symbols) == 1 and len(selected_sources) >= 2:
+        # Dual source mode - show side-by-side for each source
         churn_cols = st.columns(len(selected_sources))
         for idx, source in enumerate(selected_sources):
             with churn_cols[idx]:
@@ -1179,23 +1134,6 @@ def main():
                 except Exception:
                     pass
             
-            # Spread (bps) Over Time - one plot per symbol
-            st.subheader("Spread (bps) Over Time")
-            for symbol in selected_symbols:
-                if filtered_nbbo is not None and len(filtered_nbbo) > 0 and "symbol" in filtered_nbbo.columns:
-                    symbol_nbbo = filtered_nbbo.filter(pl.col("symbol") == symbol)
-                    if len(symbol_nbbo) > 0:
-                        fig_spread_bps = plot_spread_bps_timeline(
-                            symbol_nbbo,
-                            show_churn=False,
-                            symbol=symbol,
-                        )
-                        st.plotly_chart(fig_spread_bps, width='stretch')
-                    else:
-                        st.info(f"No NBBO data for {symbol}")
-            
-            # Quote Churn - one plot per symbol
-            st.subheader("Quote Churn")
             for symbol in selected_symbols:
                 if filtered_nbbo is not None and len(filtered_nbbo) > 0 and "symbol" in filtered_nbbo.columns:
                     symbol_nbbo = filtered_nbbo.filter(pl.col("symbol") == symbol)
@@ -1208,180 +1146,15 @@ def main():
                     else:
                         st.info(f"No NBBO data for {symbol}")
         else:
-            # Single symbol - show side-by-side
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                if nbbo is not None and len(nbbo) > 0:
-                    st.subheader("Spread (bps) Over Time")
-                    fig_spread_bps = plot_spread_bps_timeline(
-                        nbbo,
-                        show_churn=False,
-                        symbol=selected_symbols[0] if len(selected_symbols) == 1 else None,
-                    )
-                    st.plotly_chart(fig_spread_bps, width='stretch')
-                else:
-                    st.info("NBBO data not available")
-            
-            with col2:
-                if nbbo is not None and len(nbbo) > 0:
-                    st.subheader("Quote Churn")
-                    fig_churn = plot_churn_bar_chart(
-                        nbbo,
-                        symbol=selected_symbols[0] if len(selected_symbols) == 1 else None,
-                    )
-                    st.plotly_chart(fig_churn, width='stretch')
-                else:
-                    st.info("NBBO data not available")
-    
-    # Distribution views
-    st.header("Distribution Views")
-    
-    if show_dual_source and len(selected_symbols) == 1 and len(selected_sources) >= 2:
-        # Dual source mode - show side-by-side for each source
-        # Spread Distribution
-        st.subheader("Spread Distribution")
-        spread_dist_cols = st.columns(len(selected_sources))
-        for idx, source in enumerate(selected_sources):
-            with spread_dist_cols[idx]:
-                source_nbbo = filtered_sources_data.get(source, {}).get("nbbo")
-                if source_nbbo is not None and len(source_nbbo) > 0:
-                    fig_spread_dist = plot_spread_histogram(
-                        source_nbbo,
-                        symbol=f"{selected_symbols[0]} ({source.upper()})",
-                    )
-                    st.plotly_chart(fig_spread_dist, width='stretch')
-                else:
-                    st.info(f"No NBBO data for {source}")
-        
-        # Trade Size Distribution
-        st.subheader("Trade Size Distribution")
-        size_dist_cols = st.columns(len(selected_sources))
-        for idx, source in enumerate(selected_sources):
-            with size_dist_cols[idx]:
-                source_trades = filtered_sources_data.get(source, {}).get("trades")
-                if source_trades is not None and len(source_trades) > 0 and "size" in source_trades.columns:
-                    try:
-                        import plotly.express as px
-                        trades_pd = source_trades.select(["size"]).to_pandas()
-                        fig_size_dist = px.histogram(
-                            trades_pd,
-                            x="size",
-                            nbins=50,
-                            title=f"{selected_symbols[0]} ({source.upper()}) - Trade Size Distribution",
-                            labels={"size": "Trade Size", "count": "Frequency"},
-                        )
-                        fig_size_dist.update_layout(height=400)
-                        st.plotly_chart(fig_size_dist, width='stretch')
-                    except Exception as e:
-                        st.error(f"Error creating trade size distribution for {source}: {e}")
-                else:
-                    st.info(f"No trade size data for {source}")
-    else:
-        # Single source mode
-        if len(selected_symbols) > 1:
-            # Multiple symbols - show one plot per symbol
-            # Filter data by time range first
-            filtered_nbbo = nbbo_for_viz
-            filtered_trades = trades_for_viz
-            
-            if filtered_nbbo is not None and len(filtered_nbbo) > 0 and start_time is not None and end_time is not None:
-                try:
-                    start_ts = int(start_time.timestamp() * 1_000_000)
-                    end_ts = int(end_time.timestamp() * 1_000_000)
-                    filtered_nbbo = filtered_nbbo.filter(
-                        (pl.col("ts_event").dt.timestamp("us") >= start_ts) &
-                        (pl.col("ts_event").dt.timestamp("us") <= end_ts)
-                    )
-                except Exception:
-                    pass
-            
-            if filtered_trades is not None and len(filtered_trades) > 0 and start_time is not None and end_time is not None:
-                try:
-                    start_ts = int(start_time.timestamp() * 1_000_000)
-                    end_ts = int(end_time.timestamp() * 1_000_000)
-                    filtered_trades = filtered_trades.filter(
-                        (pl.col("ts_event").dt.timestamp("us") >= start_ts) &
-                        (pl.col("ts_event").dt.timestamp("us") <= end_ts)
-                    )
-                except Exception:
-                    pass
-            
-            # Spread Distribution - one plot per symbol
-            st.subheader("Spread Distribution")
-            for symbol in selected_symbols:
-                if filtered_nbbo is not None and len(filtered_nbbo) > 0 and "symbol" in filtered_nbbo.columns:
-                    symbol_nbbo = filtered_nbbo.filter(pl.col("symbol") == symbol)
-                    if len(symbol_nbbo) > 0:
-                        fig_spread_dist = plot_spread_histogram(
-                            symbol_nbbo,
-                            symbol=symbol,
-                        )
-                        st.plotly_chart(fig_spread_dist, width='stretch')
-                    else:
-                        st.info(f"No NBBO data for {symbol}")
-            
-            # Trade Size Distribution - one plot per symbol
-            st.subheader("Trade Size Distribution")
-            for symbol in selected_symbols:
-                if filtered_trades is not None and len(filtered_trades) > 0 and "size" in filtered_trades.columns and "symbol" in filtered_trades.columns:
-                    symbol_trades = filtered_trades.filter(pl.col("symbol") == symbol)
-                    if len(symbol_trades) > 0:
-                        try:
-                            import plotly.express as px
-                            trades_pd = symbol_trades.select(["size"]).to_pandas()
-                            fig_size_dist = px.histogram(
-                                trades_pd,
-                                x="size",
-                                nbins=50,
-                                title=f"{symbol} - Trade Size Distribution",
-                                labels={"size": "Trade Size", "count": "Frequency"},
-                            )
-                            fig_size_dist.update_layout(height=400)
-                            st.plotly_chart(fig_size_dist, width='stretch')
-                        except Exception as e:
-                            st.error(f"Error creating trade size distribution for {symbol}: {e}")
-                    else:
-                        st.info(f"No trade data for {symbol}")
-                elif filtered_trades is not None and len(filtered_trades) > 0:
-                    st.info(f"Trade size data not available for {symbol}")
-        else:
-            # Single symbol - show side-by-side
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                if nbbo is not None and len(nbbo) > 0:
-                    st.subheader("Spread Distribution")
-                    fig_spread_dist = plot_spread_histogram(
-                        nbbo,
-                        symbol=selected_symbols[0] if len(selected_symbols) == 1 else None,
-                    )
-                    st.plotly_chart(fig_spread_dist, width='stretch')
-                else:
-                    st.info("NBBO data not available")
-            
-            with col2:
-                if trades is not None and len(trades) > 0 and "size" in trades.columns:
-                    st.subheader("Trade Size Distribution")
-                    try:
-                        # Create trade size distribution histogram
-                        import plotly.express as px
-                        trades_pd = trades.select(["size"]).to_pandas()
-                        fig_size_dist = px.histogram(
-                            trades_pd,
-                            x="size",
-                            nbins=50,
-                            title=f"{selected_symbols[0] if selected_symbols else ''} - Trade Size Distribution".strip(),
-                            labels={"size": "Trade Size", "count": "Frequency"},
-                        )
-                        fig_size_dist.update_layout(height=400)
-                        st.plotly_chart(fig_size_dist, width='stretch')
-                    except Exception as e:
-                        st.error(f"Error creating trade size distribution: {e}")
-                elif trades is not None and len(trades) > 0:
-                    st.info("Trade size data not available")
-                else:
-                    st.info("Trades data required for size distribution")
+            # Single symbol
+            if nbbo is not None and len(nbbo) > 0:
+                fig_churn = plot_churn_bar_chart(
+                    nbbo,
+                    symbol=selected_symbols[0] if len(selected_symbols) == 1 else None,
+                )
+                st.plotly_chart(fig_churn, width='stretch')
+            else:
+                st.info("NBBO data not available")
     
     # Tables
     st.header("Tables")
