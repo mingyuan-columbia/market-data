@@ -26,6 +26,7 @@ from streamlit_app.data_checker import (
     suggest_alternatives,
     check_symbol_availability_across_sources,
     find_common_sources_for_symbols,
+    find_symbols_across_dates,
 )
 from streamlit_app.data_loader import load_trades, load_nbbo
 from streamlit_app.visualizations import (
@@ -158,9 +159,6 @@ def main():
         st.error(f"Error loading configuration: {e}")
         st.stop()
     
-    # Sidebar - Filters
-    st.sidebar.header("📊 Data Selection")
-    
     # Get data root from config
     data_root = config.data_root
     available_sources = list(config.data_sources.keys())
@@ -168,101 +166,274 @@ def main():
         st.error("No data sources configured. Please check config.yaml")
         st.stop()
     
-    # ===== STEP 1: DATE SELECTION FIRST =====
-    st.sidebar.header("📅 Date Selection")
+    # ===== STEP 1: MODE SELECTION =====
+    st.sidebar.header("📊 Mode Selection")
     
-    # Find available dates across all sources
-    all_available_dates = set()
-    for source in available_sources:
-        trades_dates = find_available_dates(
-            data_root, source, data_type="trades", max_days=365
-        )
-        nbbo_dates = find_available_dates(
-            data_root, source, data_type="nbbo", max_days=365
-        )
-        all_available_dates.update(trades_dates + nbbo_dates)
-    
-    available_dates = sorted(list(all_available_dates), reverse=True)  # Most recent first
-    
-    # Set default date to 2024-01-02
-    default_date = date(2024, 1, 2)
-    if available_dates:
-        if default_date in available_dates:
-            default_value = default_date
-        else:
-            default_value = available_dates[0]  # Most recent
-        min_date = min(available_dates)
-        max_date = max(available_dates)
-    else:
-        default_value = default_date
-        min_date = date(2020, 1, 1)
-        max_date = date.today()
-    
-    # Date selection
-    if available_dates:
-        selected_date = st.sidebar.selectbox(
-            "Trade Date",
-            options=available_dates,
-            index=available_dates.index(default_value) if default_value in available_dates else 0,
-            format_func=lambda d: d.strftime("%Y-%m-%d"),
-        )
-    else:
-        selected_date = st.sidebar.date_input(
-            "Trade Date",
-            value=default_value,
-            min_value=min_date,
-            max_value=max_date,
-        )
-    
-    # ===== STEP 2: SYMBOL MODE SELECTION =====
-    st.sidebar.header("📊 Symbol Selection")
-    
-    # Mode selection: Single or Multiple
+    # Mode selection: Single, Multiple, or Cross Comparison
     symbol_mode = st.sidebar.radio(
         "Mode",
-        options=["Single Symbol", "Multiple Symbols"],
+        options=["Single Symbol", "Multiple Symbols", "Cross Comparison"],
         index=0,
     )
     
     # Reset symbol selection flag if mode changed
     if "prev_symbol_mode" in st.session_state:
         if st.session_state.prev_symbol_mode != symbol_mode:
-            st.session_state.symbol_selection_applied = False
+            st.session_state.data_selection_applied = False
+            # Clear selected dates for Single Symbol mode
+            if "single_symbol_dates" in st.session_state:
+                del st.session_state["single_symbol_dates"]
     st.session_state.prev_symbol_mode = symbol_mode
-    
-    # Find available symbols across all sources for this date
-    all_available_symbols = set()
-    for source in available_sources:
-        symbols = find_available_symbols(data_root, source, selected_date, data_type="trades")
-        if not symbols:
-            symbols = find_available_symbols(data_root, source, selected_date, data_type="nbbo")
-        all_available_symbols.update(symbols)
-    
-    all_available_symbols = sorted(list(all_available_symbols))
-    
-    if not all_available_symbols:
-        st.sidebar.warning("No symbols found for this date")
-        st.info("Please select a different date or check your data.")
-        st.stop()
     
     # Symbol selection based on mode
     if symbol_mode == "Single Symbol":
-        # Single symbol selection
-        default_symbol = "AAPL" if "AAPL" in all_available_symbols else all_available_symbols[0]
-        default_idx = all_available_symbols.index(default_symbol) if default_symbol in all_available_symbols else 0
-        
-        selected_symbols = [st.sidebar.selectbox(
-            "Symbol",
-            options=all_available_symbols,
-            index=default_idx,
-        )]
+            # ===== SINGLE SYMBOL MODE: Multiple dates, then symbol, then sources =====
+            
+            # Step 1: Date range selection (default 2024-01-02 to 2024-01-05)
+            st.sidebar.subheader("📅 Date Selection")
+            default_start_date = date(2024, 1, 2)
+            default_end_date = date(2024, 1, 5)
+            
+            # Find available dates to set min/max
+            all_available_dates = set()
+            for source in available_sources:
+                trades_dates = find_available_dates(
+                    data_root, source, data_type="trades", max_days=365
+                )
+                nbbo_dates = find_available_dates(
+                    data_root, source, data_type="nbbo", max_days=365
+                )
+                all_available_dates.update(trades_dates + nbbo_dates)
+            
+            available_dates = sorted(list(all_available_dates), reverse=True)
+            min_date = min(available_dates) if available_dates else date(2020, 1, 1)
+            max_date = max(available_dates) if available_dates else date.today()
+            
+            date_range = st.sidebar.date_input(
+                "Date Range",
+                value=(default_start_date, default_end_date),
+                min_value=min_date,
+                max_value=max_date,
+                help="Select a date range. Dates with no data will be filtered out.",
+            )
+            
+            # Handle date_range - it can be a single date or tuple
+            if isinstance(date_range, tuple) and len(date_range) == 2:
+                start_date, end_date = date_range
+                # Generate list of dates in range
+                selected_dates_list = []
+                current_date = start_date
+                while current_date <= end_date:
+                    selected_dates_list.append(current_date)
+                    current_date += timedelta(days=1)
+            elif isinstance(date_range, date):
+                selected_dates_list = [date_range]
+            else:
+                selected_dates_list = [default_start_date, default_end_date]
+            
+            # Step 2: Filter dates with no data in any source
+            dates_with_data = []
+            for check_date in selected_dates_list:
+                has_data = False
+                for source in available_sources:
+                    # Check if any data exists for this date in this source
+                    if check_data_available(data_root, source, check_date, data_type="trades") or \
+                       check_data_available(data_root, source, check_date, data_type="nbbo"):
+                        has_data = True
+                        break
+                if has_data:
+                    dates_with_data.append(check_date)
+            
+            if not dates_with_data:
+                st.sidebar.error("No data available for any of the selected dates")
+                st.info("Please select a different date range or check your data.")
+                st.stop()
+            
+            # Show filtered dates info if some were removed
+            if len(dates_with_data) < len(selected_dates_list):
+                removed_dates = set(selected_dates_list) - set(dates_with_data)
+                st.sidebar.info(f"Filtered out {len(removed_dates)} date(s) with no data: {', '.join([d.strftime('%Y-%m-%d') for d in sorted(removed_dates)])}")
+            
+            selected_dates_list = dates_with_data
+            
+            # Step 3: Find symbols available across all selected dates
+            all_available_symbols = find_symbols_across_dates(
+                data_root, available_sources, selected_dates_list, data_type="trades"
+            )
+            
+            if not all_available_symbols:
+                # Fallback to NBBO
+                all_available_symbols = find_symbols_across_dates(
+                    data_root, available_sources, selected_dates_list, data_type="nbbo"
+                )
+            
+            if not all_available_symbols:
+                st.sidebar.warning("No symbols found across all selected dates")
+                st.info("Please select a different date range or check your data.")
+                st.stop()
+            
+            # Step 4: Symbol selection (default SPY)
+            st.sidebar.subheader("📈 Symbol Selection")
+            default_symbol = "SPY" if "SPY" in all_available_symbols else all_available_symbols[0]
+            default_idx = all_available_symbols.index(default_symbol) if default_symbol in all_available_symbols else 0
+            
+            selected_symbols = [st.sidebar.selectbox(
+                "Symbol",
+                options=all_available_symbols,
+                index=default_idx,
+            )]
+            
+            # Step 5: Source selection as checkboxes
+            st.sidebar.subheader("🔌 Data Source")
+            symbol = selected_symbols[0]
+            
+            # Check which sources have data for this symbol across all selected dates
+            sources_available = {}
+            for source in available_sources:
+                has_data = False
+                for check_date in selected_dates_list:
+                    if check_data_available(data_root, source, check_date, symbol, data_type="trades") or \
+                       check_data_available(data_root, source, check_date, symbol, data_type="nbbo"):
+                        has_data = True
+                        break
+                sources_available[source] = has_data
+            
+            # Default to taq if available
+            default_source = "taq" if sources_available.get("taq", False) else None
+            if default_source is None:
+                # Find first available source
+                for source in available_sources:
+                    if sources_available.get(source, False):
+                        default_source = source
+                        break
+            
+            # Initialize session state for source selection
+            source_state_key = "single_symbol_sources_state"
+            if source_state_key not in st.session_state:
+                st.session_state[source_state_key] = {source: (source == default_source and sources_available.get(source, False)) for source in available_sources}
+            
+            source_state = st.session_state[source_state_key]
+            
+            # Collect selected sources from checkboxes
+            selected_sources = []
+            for source in available_sources:
+                is_disabled = not sources_available[source]
+                label = f"{source.upper()}"
+                if is_disabled:
+                    label += " (Not Available)"
+                
+                current_value = source_state.get(source, False) and sources_available.get(source, False)
+                
+                checkbox_value = st.sidebar.checkbox(
+                    label,
+                    value=current_value,
+                    disabled=is_disabled,
+                    key=f"source_check_{source}"
+                )
+                
+                source_state[source] = checkbox_value
+                
+                if checkbox_value and sources_available.get(source, False):
+                    selected_sources.append(source)
+            
+            st.session_state[source_state_key] = source_state
+            
+            # Ensure at least one source is selected
+            if not selected_sources:
+                if default_source and sources_available.get(default_source, False):
+                    selected_sources = [default_source]
+                    source_state[default_source] = True
+                    st.session_state[source_state_key] = source_state
+                    st.sidebar.info(f"At least one source required. Defaulting to {default_source.upper()}.")
+                else:
+                    st.sidebar.warning("Please select at least one data source")
+                    st.info("At least one data source must be selected.")
+                    st.stop()
+            
+            show_dual_source = len(selected_sources) > 1
+            # Use first date for time range calculation (will be updated later for multi-date support)
+            selected_date = selected_dates_list[0]
+            
+    elif symbol_mode == "Cross Comparison":
+        # Cross Comparison mode - will be implemented later
+        st.sidebar.info("Cross Comparison mode - coming soon")
+        st.info("Cross Comparison mode is not yet implemented.")
+        st.stop()
     else:
-        # Multiple symbols selection - use form to batch input
+        # Multiple Symbols mode - keep existing logic but need date selection first
+        # For now, use a single date (will be updated later)
+        st.sidebar.subheader("📅 Date Selection")
+        
+        # Find available dates across all sources
+        all_available_dates = set()
+        for source in available_sources:
+            trades_dates = find_available_dates(
+                data_root, source, data_type="trades", max_days=365
+            )
+            nbbo_dates = find_available_dates(
+                data_root, source, data_type="nbbo", max_days=365
+            )
+            all_available_dates.update(trades_dates + nbbo_dates)
+        
+        available_dates = sorted(list(all_available_dates), reverse=True)
+        
+        # Set default date to 2024-01-02
+        default_date = date(2024, 1, 2)
+        if available_dates:
+            if default_date in available_dates:
+                default_value = default_date
+            else:
+                default_value = available_dates[0]
+            min_date = min(available_dates)
+            max_date = max(available_dates)
+        else:
+            default_value = default_date
+            min_date = date(2020, 1, 1)
+            max_date = date.today()
+        
+        # Date selection
+        # Initialize from session state if exists
+        if "selected_date" in st.session_state and st.session_state.selected_date in available_dates:
+            default_selected = st.session_state.selected_date
+        else:
+            default_selected = default_value
+        
+        if available_dates:
+            selected_date = st.sidebar.selectbox(
+                "Trade Date",
+                options=available_dates,
+                index=available_dates.index(default_selected) if default_selected in available_dates else 0,
+                format_func=lambda d: d.strftime("%Y-%m-%d"),
+            )
+        else:
+            selected_date = st.sidebar.date_input(
+                "Trade Date",
+                value=default_selected,
+                min_value=min_date,
+                max_value=max_date,
+            )
+        
+        # Find available symbols across all sources for this date
+        all_available_symbols = set()
+        for source in available_sources:
+            symbols = find_available_symbols(data_root, source, selected_date, data_type="trades")
+            if not symbols:
+                symbols = find_available_symbols(data_root, source, selected_date, data_type="nbbo")
+            all_available_symbols.update(symbols)
+        
+        all_available_symbols = sorted(list(all_available_symbols))
+        
+        if not all_available_symbols:
+            st.sidebar.warning("No symbols found for this date")
+            st.info("Please select a different date or check your data.")
+            st.stop()
+        
+        # Multiple symbols selection
+        st.sidebar.subheader("📈 Symbol Selection")
         # Initialize session state if needed
         if "selected_symbols" not in st.session_state:
             default_symbols = ["AAPL"] if "AAPL" in all_available_symbols else all_available_symbols[:1]
             st.session_state.selected_symbols = default_symbols
-            st.session_state.symbol_selection_applied = True
         
         # Get current selection from session state
         current_selection = st.session_state.get("selected_symbols", [])
@@ -270,66 +441,31 @@ def main():
         current_selection = [s for s in current_selection if s in all_available_symbols]
         if not current_selection:
             current_selection = all_available_symbols[:1]
-            st.session_state.selected_symbols = current_selection
         
-        with st.sidebar.form("symbol_selection_form"):
-            selected_symbols = st.multiselect(
-                "Symbols",
-                options=all_available_symbols,
-                default=current_selection,
-                help="Select multiple symbols. Click 'Apply Symbols' to update plots.",
-            )
-            
-            apply_symbols = st.form_submit_button("Apply Symbols", type="primary")
-            
-            if apply_symbols:
-                if not selected_symbols:
-                    st.sidebar.warning("Please select at least one symbol")
-                else:
-                    st.session_state.selected_symbols = selected_symbols
-                    st.session_state.symbol_selection_applied = True
-        
-        # Always use session state values after form
-        selected_symbols = st.session_state.get("selected_symbols", [])
+        selected_symbols = st.multiselect(
+            "Symbols",
+            options=all_available_symbols,
+            default=current_selection,
+            help="Select multiple symbols.",
+        )
         
         if not selected_symbols:
-            st.sidebar.warning("Please select at least one symbol and click 'Apply Symbols'")
-            st.info("Please select one or more symbols and click 'Apply Symbols' to visualize.")
-            st.stop()
+            st.sidebar.warning("Please select at least one symbol")
     
-    # ===== STEP 3: DETERMINE DATA SOURCES =====
-    # Check availability for selected symbols across sources
-    symbol_availability = check_symbol_availability_across_sources(
-        data_root, config.data_sources, selected_date, selected_symbols, data_type="trades"
-    )
-    
-    # Also check NBBO availability
-    nbbo_symbol_availability = check_symbol_availability_across_sources(
-        data_root, config.data_sources, selected_date, selected_symbols, data_type="nbbo"
-    )
-    
-    # Determine which sources have all symbols
-    if symbol_mode == "Single Symbol":
-        # For single symbol: check if available in both sources
-        symbol = selected_symbols[0]
-        available_in_sources = [
-            source for source in available_sources
-            if symbol_availability.get(symbol, {}).get(source, False) or
-               nbbo_symbol_availability.get(symbol, {}).get(source, False)
-        ]
+    # ===== STEP 2: DETERMINE DATA SOURCES =====
+    # For Single Symbol mode, sources are already determined above
+    # For other modes, determine sources here
+    if symbol_mode != "Single Symbol":
+        # Check availability for selected symbols across sources
+        symbol_availability = check_symbol_availability_across_sources(
+            data_root, config.data_sources, selected_date, selected_symbols, data_type="trades"
+        )
         
-        if len(available_in_sources) == 0:
-            st.error(f"No data available for {symbol} on {selected_date}")
-            st.stop()
-        elif len(available_in_sources) == 1:
-            # Only one source - use it
-            selected_sources = available_in_sources
-            show_dual_source = False
-        else:
-            # Multiple sources - show both
-            selected_sources = available_in_sources
-            show_dual_source = True
-    else:
+        # Also check NBBO availability
+        nbbo_symbol_availability = check_symbol_availability_across_sources(
+            data_root, config.data_sources, selected_date, selected_symbols, data_type="nbbo"
+        )
+        
         # For multiple symbols: allow user to choose data source first
         # Find sources that have all symbols
         common_sources = find_common_sources_for_symbols(
@@ -393,67 +529,160 @@ def main():
             selected_sources = [selected_source]
             show_dual_source = False
     
-    # Store in session state for visualization
+    # For Single Symbol mode, limit to maximum 2 sources
+    if symbol_mode == "Single Symbol":
+        if len(selected_sources) > 2:
+            selected_sources = selected_sources[:2]
+            st.sidebar.info(f"Maximum 2 data sources allowed. Using: {', '.join([s.upper() for s in selected_sources])}")
+    
+    # Store selections in session state immediately (no form submission needed)
     st.session_state.selected_symbols = selected_symbols
     st.session_state.selected_sources = selected_sources
     st.session_state.show_dual_source = show_dual_source if symbol_mode == "Single Symbol" else False
     st.session_state.symbol_mode = symbol_mode
+    if symbol_mode == "Single Symbol":
+        st.session_state.single_symbol_dates = selected_dates_list
+    else:
+        # Store selected_date for Multiple Symbols mode
+        st.session_state.selected_date = selected_date
     
     # ===== STEP 4: LOAD DATA FROM SELECTED SOURCES =====
     # Load data for each source and symbol combination
-    data_by_source = {}  # {source: {"trades": df, "nbbo": df}}
+    # For Single Symbol: {source: {date: {"trades": df, "nbbo": df}}}
+    # For others: {source: {"trades": df, "nbbo": df}}
+    data_by_source = {}
     
     with st.spinner("Loading data..."):
-        for source in selected_sources:
-            data_by_source[source] = {"trades": None, "nbbo": None}
+        if symbol_mode == "Single Symbol":
+            # Single Symbol mode: load data for each date and source separately
+            for source in selected_sources:
+                data_by_source[source] = {}
+                for load_date in selected_dates_list:
+                    data_by_source[source][load_date] = {"trades": None, "nbbo": None}
+                    symbol_param = selected_symbols[0]
+                    
+                    # Load trades for this date/source
+                    trades_date = load_trades(
+                        data_root, source, load_date, symbol=symbol_param, timezone=config.timezone
+                    )
+                    if trades_date is not None and len(trades_date) > 0:
+                        data_by_source[source][load_date]["trades"] = trades_date
+                    
+                    # Load NBBO for this date/source
+                    nbbo_date = load_nbbo(
+                        data_root, source, load_date, symbol=symbol_param, timezone=config.timezone
+                    )
+                    if nbbo_date is not None and len(nbbo_date) > 0:
+                        data_by_source[source][load_date]["nbbo"] = nbbo_date
             
-            # Load trades
-            trades_available = any(
-                symbol_availability.get(sym, {}).get(source, False)
-                for sym in selected_symbols
-            )
-            if trades_available:
-                # Pass single symbol as string, multiple as list
-                symbol_param = selected_symbols[0] if len(selected_symbols) == 1 else selected_symbols
-                trades = load_trades(
-                    data_root,
-                    source,
-                    selected_date,
-                    symbol=symbol_param,
-                    timezone=config.timezone,
-                )
-                if trades is not None and len(trades) > 0:
-                    data_by_source[source]["trades"] = trades
+            # For backward compatibility and time range calculation, combine all data into primary trades/nbbo
+            # Combine all dates and sources into single DataFrames for global min/max time
+            all_trades = []
+            all_nbbo = []
+            for source in selected_sources:
+                for load_date in selected_dates_list:
+                    t = data_by_source[source][load_date]["trades"]
+                    n = data_by_source[source][load_date]["nbbo"]
+                    if t is not None: all_trades.append(t)
+                    if n is not None: all_nbbo.append(n)
             
-            # Load NBBO
-            nbbo_available = any(
-                nbbo_symbol_availability.get(sym, {}).get(source, False)
-                for sym in selected_symbols
-            )
-            if nbbo_available:
-                # Pass single symbol as string, multiple as list
-                symbol_param = selected_symbols[0] if len(selected_symbols) == 1 else selected_symbols
-                nbbo = load_nbbo(
-                    data_root,
-                    source,
-                    selected_date,
-                    symbol=symbol_param,
-                    timezone=config.timezone,
+            # Combine trades
+            if all_trades:
+                if len(all_trades) == 1:
+                    trades = all_trades[0]
+                else:
+                    try:
+                        trades = pl.concat(all_trades)
+                    except Exception as e:
+                        logger.warning(f"Error concatenating trades: {e}, using first DataFrame")
+                        trades = all_trades[0]
+            else:
+                trades = None
+            
+            # Combine NBBO
+            if all_nbbo:
+                if len(all_nbbo) == 1:
+                    nbbo = all_nbbo[0]
+                else:
+                    try:
+                        nbbo = pl.concat(all_nbbo)
+                    except Exception as e:
+                        logger.warning(f"Error concatenating NBBO: {e}, using first DataFrame")
+                        nbbo = all_nbbo[0]
+            else:
+                nbbo = None
+        else:
+            # Multiple Symbols or Cross Comparison mode: load data normally
+            for source in selected_sources:
+                data_by_source[source] = {"trades": None, "nbbo": None}
+                
+                # Check if data is available (different logic for Single Symbol vs Multiple Symbols)
+                # For Multiple Symbols mode, use the availability check
+                trades_available = any(
+                    symbol_availability.get(sym, {}).get(source, False)
+                    for sym in selected_symbols
                 )
-                if nbbo is not None and len(nbbo) > 0:
-                    data_by_source[source]["nbbo"] = nbbo
-    
-    # For backward compatibility, use first source's data as primary
-    if selected_sources:
-        primary_source = selected_sources[0]
-        trades = data_by_source[primary_source]["trades"]
-        nbbo = data_by_source[primary_source]["nbbo"]
-    else:
-        trades = None
-        nbbo = None
+                nbbo_available = any(
+                    nbbo_symbol_availability.get(sym, {}).get(source, False)
+                    for sym in selected_symbols
+                )
+                
+                if trades_available:
+                    # Pass single symbol as string, multiple as list
+                    symbol_param = selected_symbols[0] if len(selected_symbols) == 1 else selected_symbols
+                    trades = load_trades(
+                        data_root,
+                        source,
+                        selected_date,
+                        symbol=symbol_param,
+                        timezone=config.timezone,
+                    )
+                    if trades is not None and len(trades) > 0:
+                        data_by_source[source]["trades"] = trades
+                
+                if nbbo_available:
+                    # Pass single symbol as string, multiple as list
+                    symbol_param = selected_symbols[0] if len(selected_symbols) == 1 else selected_symbols
+                    nbbo = load_nbbo(
+                        data_root,
+                        source,
+                        selected_date,
+                        symbol=symbol_param,
+                        timezone=config.timezone,
+                    )
+                    if nbbo is not None and len(nbbo) > 0:
+                        data_by_source[source]["nbbo"] = nbbo
+            
+            # For backward compatibility, use first source's data as primary
+            if selected_sources:
+                primary_source = selected_sources[0]
+                trades = data_by_source[primary_source]["trades"]
+                nbbo = data_by_source[primary_source]["nbbo"]
+            else:
+                trades = None
+                nbbo = None
     
     # Store data_by_source in session state for visualization
-    st.session_state.data_by_source = data_by_source
+    # For Single Symbol mode, convert date keys to strings to avoid serialization issues
+    # Also ensure we're storing the data correctly
+    if symbol_mode == "Single Symbol":
+        data_by_source_for_storage = {}
+        for source in data_by_source:
+            data_by_source_for_storage[source] = {}
+            source_dict = data_by_source.get(source, {})
+            # Handle both date objects and strings as keys
+            for date_key, day_data in source_dict.items():
+                # Convert date to string for storage
+                if isinstance(date_key, date):
+                    date_str = date_key.isoformat()
+                elif isinstance(date_key, str):
+                    date_str = date_key
+                else:
+                    date_str = str(date_key)
+                data_by_source_for_storage[source][date_str] = day_data
+        st.session_state.data_by_source = data_by_source_for_storage
+    else:
+        st.session_state.data_by_source = data_by_source
     
     # Time range slider (only show if we have data)
     st.sidebar.header("⏰ Time Range")
@@ -600,37 +829,37 @@ def main():
         start_time = None
         end_time = None
     
-    # Use form to batch inputs and prevent rerun storms
-    with st.sidebar.form("visualization_controls"):
-        # Toggle overlays
-        st.header("🎛️ Overlays")
-        show_trades = st.checkbox("Show Trades", value=True)
-        show_nbbo = st.checkbox("Show NBBO", value=True)
-        show_mid_price = st.checkbox("Show Mid Price", value=False)
-        show_vwap = st.checkbox("Show VWAP", value=False)
-        
-        # Trade size filter
-        st.header("🔍 Filters")
-        min_trade_size = st.number_input(
-            "Min Trade Size",
-            min_value=0,
-            value=0,
-            step=1,
-            help="Filter trades by minimum size (0 = show all)",
-        )
-        
-        # Apply button
-        apply_button = st.form_submit_button("Apply Changes", type="primary")
-        
-        # Store form state in session state
-        if apply_button or "viz_settings" not in st.session_state:
-            st.session_state.viz_settings = {
-                "show_trades": show_trades,
-                "show_nbbo": show_nbbo,
-                "show_mid_price": show_mid_price,
-                "show_vwap": show_vwap,
-                "min_trade_size": min_trade_size,
-            }
+    # Filters section
+    st.sidebar.header("🔍 Filters")
+    
+    # Initialize filter value in session state if not exists
+    if "filter_min_trade_size" not in st.session_state:
+        st.session_state.filter_min_trade_size = 0
+    
+    min_trade_size = st.sidebar.number_input(
+        "Min Trade Size",
+        min_value=0,
+        value=st.session_state.filter_min_trade_size,
+        step=1,
+        key="filter_min_trade_size_input",
+        help="Filter trades by minimum size (0 = show all)",
+    )
+    
+    # Update session state with current input value
+    st.session_state.filter_min_trade_size = min_trade_size
+    
+    # Apply button outside the filters panel
+    apply_button = st.sidebar.button("Apply Changes", type="primary", use_container_width=True)
+    
+    # Store form state in session state only when button is clicked
+    if apply_button or "viz_settings" not in st.session_state:
+        st.session_state.viz_settings = {
+            "show_trades": True,  # Always show trades
+            "show_nbbo": True,    # Always show NBBO
+            "show_mid_price": False,  # Default to False
+            "show_vwap": False,  # Default to False
+            "min_trade_size": st.session_state.filter_min_trade_size,
+        }
     
     # Use session state values for visualization
     default_viz_settings = {
@@ -715,12 +944,66 @@ def main():
     # Main content
     st.title("📈 Market Data Interactive Analysis")
     
+    # Helper function to get data by date, handling both date objects and date strings
+    # (defined here so it's available for all visualization sections)
+    def get_data_by_date(source_data: dict, target_date: date) -> dict:
+        """Get data for a specific date, handling both date object and string keys."""
+        if not source_data:
+            return {}
+        
+        # Normalize target_date to ensure it's a date object
+        if isinstance(target_date, str):
+            try:
+                target_date = date.fromisoformat(target_date)
+            except (ValueError, AttributeError):
+                return {}
+        
+        # Try direct date object key first
+        if target_date in source_data:
+            return source_data[target_date]
+        
+        # Try date string key
+        date_str = target_date.isoformat()
+        if date_str in source_data:
+            return source_data[date_str]
+        
+        # Try to find matching date by converting all keys
+        for key, value in source_data.items():
+            if isinstance(key, date) and key == target_date:
+                return value
+            elif isinstance(key, str):
+                try:
+                    key_date = date.fromisoformat(key)
+                    if key_date == target_date:
+                        return value
+                except (ValueError, AttributeError):
+                    pass
+        
+        return {}
+    
     # Check if we have any data
-    has_any_data = any(
-        data_by_source.get(source, {}).get("trades") is not None or
-        data_by_source.get(source, {}).get("nbbo") is not None
-        for source in selected_sources
-    )
+    symbol_mode = st.session_state.get("symbol_mode", "Single Symbol")
+    if symbol_mode == "Single Symbol":
+        # For Single Symbol mode, check nested structure: data_by_source[source][date]
+        has_any_data = False
+        selected_dates_list = st.session_state.get("single_symbol_dates", [])
+        for source in selected_sources:
+            source_data = data_by_source.get(source, {})
+            if isinstance(source_data, dict):
+                for date_key in selected_dates_list:
+                    day_data = get_data_by_date(source_data, date_key)
+                    if day_data.get("trades") is not None or day_data.get("nbbo") is not None:
+                        has_any_data = True
+                        break
+                if has_any_data:
+                    break
+    else:
+        # For other modes, check flat structure: data_by_source[source]
+        has_any_data = any(
+            data_by_source.get(source, {}).get("trades") is not None or
+            data_by_source.get(source, {}).get("nbbo") is not None
+            for source in selected_sources
+        )
     
     if not has_any_data:
         st.warning("No data available for the selected date and source.")
@@ -730,8 +1013,58 @@ def main():
     show_dual_source = st.session_state.get("show_dual_source", False)
     selected_sources = st.session_state.get("selected_sources", [])
     
-    if show_dual_source and len(selected_symbols) == 1 and len(selected_sources) >= 2:
-        # Single symbol with dual source - create a table
+    if symbol_mode == "Single Symbol":
+        # Single Symbol mode: Summary by date and source
+        selected_dates_list_raw = st.session_state.get("single_symbol_dates", [])
+        # Normalize dates - convert strings to date objects if needed
+        selected_dates_list = []
+        for d in selected_dates_list_raw:
+            if isinstance(d, str):
+                try:
+                    selected_dates_list.append(date.fromisoformat(d))
+                except (ValueError, AttributeError):
+                    continue
+            elif isinstance(d, date):
+                selected_dates_list.append(d)
+        
+        table_data = []
+        for plot_date in selected_dates_list:
+            for source in selected_sources:
+                source_data = data_by_source.get(source, {})
+                day_data = get_data_by_date(source_data, plot_date)
+                source_trades = day_data.get("trades")
+                source_nbbo = day_data.get("nbbo")
+                
+                row = {
+                    "Date": plot_date.strftime("%Y-%m-%d"),
+                    "Symbol": selected_symbols[0],
+                    "Source": source.upper(),
+                }
+                
+                if source_trades is not None and len(source_trades) > 0:
+                    row["Total Trades"] = f"{len(source_trades):,}"
+                    if "size" in source_trades.columns:
+                        total_volume = source_trades["size"].sum()
+                        row["Total Volume"] = f"{total_volume:,}"
+                    else:
+                        row["Total Volume"] = "N/A"
+                else:
+                    row["Total Trades"] = "N/A"
+                    row["Total Volume"] = "N/A"
+                
+                if source_nbbo is not None and len(source_nbbo) > 0:
+                    row["NBBO Records"] = f"{len(source_nbbo):,}"
+                else:
+                    row["NBBO Records"] = "N/A"
+                
+                table_data.append(row)
+        
+        if table_data:
+            import pandas as pd
+            df = pd.DataFrame(table_data)
+            st.dataframe(df, width='stretch', hide_index=True)
+    elif show_dual_source and len(selected_symbols) == 1 and len(selected_sources) >= 2:
+        # Single symbol with dual source (legacy) - create a table
         table_data = []
         for source in selected_sources:
             source_trades = data_by_source.get(source, {}).get("trades")
@@ -827,7 +1160,8 @@ def main():
     # Main panels
     st.header("Price Panel")
     
-    # Check if we should show dual-source visualization (single symbol with data in both sources)
+    # Get current mode and data
+    symbol_mode = st.session_state.get("symbol_mode", "Single Symbol")
     show_dual_source = st.session_state.get("show_dual_source", False)
     selected_sources = st.session_state.get("selected_sources", [])
     data_by_source = st.session_state.get("data_by_source", {})
@@ -886,7 +1220,199 @@ def main():
             padding = price_range * 0.05  # 5% padding on each side
             yaxis_range = (min_price - padding, max_price + padding)
     
-    if trades is not None or nbbo is not None:
+    # For Single Symbol mode, check individual day data instead of combined data
+    if symbol_mode == "Single Symbol":
+        # Helper function to get day-specific time range (defined at top level for use in all panels)
+        def get_day_time_range(plot_date, start_time, end_time):
+            """Extract time portion from start_time/end_time and apply to plot_date."""
+            from datetime import datetime
+            start_time_only = start_time.time()
+            end_time_only = end_time.time()
+            
+            day_start_time = datetime.combine(plot_date, start_time_only)
+            day_end_time = datetime.combine(plot_date, end_time_only)
+            
+            # Handle timezone if start_time has one
+            if start_time.tzinfo is not None:
+                day_start_time = day_start_time.replace(tzinfo=start_time.tzinfo)
+                day_end_time = day_end_time.replace(tzinfo=end_time.tzinfo)
+            
+            return day_start_time, day_end_time
+        
+        # Check if we have any data for any day
+        selected_dates_list_raw = st.session_state.get("single_symbol_dates", [])
+        has_any_data = False
+        for source in selected_sources:
+            source_data = data_by_source.get(source, {})
+            if source_data:
+                # Check if any day has data
+                for date_key in source_data.keys():
+                    day_data = source_data.get(date_key, {})
+                    if day_data.get("trades") is not None or day_data.get("nbbo") is not None:
+                        has_any_data = True
+                        break
+                if has_any_data:
+                    break
+        
+        if not has_any_data:
+            st.warning("No data available for the selected dates and sources.")
+        else:
+            with st.spinner("Generating visualization..."):
+                try:
+                    # Single Symbol mode: plots by day
+                    selected_dates_list_raw = st.session_state.get("single_symbol_dates", [])
+                    # Normalize dates - convert strings to date objects if needed
+                    selected_dates_list = []
+                    for d in selected_dates_list_raw:
+                        if isinstance(d, str):
+                            try:
+                                selected_dates_list.append(date.fromisoformat(d))
+                            except (ValueError, AttributeError):
+                                continue
+                        elif isinstance(d, date):
+                            selected_dates_list.append(d)
+                    
+                    # Remove duplicates while preserving order
+                    seen = set()
+                    unique_dates = []
+                    for d in selected_dates_list:
+                        date_key = d.isoformat() if isinstance(d, date) else str(d)
+                        if date_key not in seen:
+                            seen.add(date_key)
+                            unique_dates.append(d)
+                    selected_dates_list = unique_dates
+                    
+                    for plot_date in selected_dates_list:
+                        st.subheader(f"{plot_date.strftime('%Y-%m-%d')}")
+                        date_str = plot_date.isoformat()  # Define date_str for both paths
+                        
+                        if len(selected_sources) == 2:
+                            # Two sources: side-by-side plots for each day
+                            cols = st.columns(2)
+                            for idx, source in enumerate(selected_sources[:2]):  # Only use first 2 sources
+                                with cols[idx]:
+                                    source_data = data_by_source.get(source, {})
+                                    # Since we store dates as strings in session state, use direct string access
+                                    day_data = source_data.get(date_str, {})
+                                    
+                                    # Fallback: try get_data_by_date if direct access didn't work
+                                    if not day_data or (day_data.get("trades") is None and day_data.get("nbbo") is None):
+                                        day_data = get_data_by_date(source_data, plot_date)
+                                    
+                                    source_trades = day_data.get("trades") if day_data else None
+                                    source_nbbo = day_data.get("nbbo") if day_data else None
+                                    
+                                    # Filter by time range - apply time portion to the current plot_date
+                                    if source_trades is not None and len(source_trades) > 0 and start_time is not None and end_time is not None:
+                                        try:
+                                            day_start_time, day_end_time = get_day_time_range(plot_date, start_time, end_time)
+                                            start_ts = int(day_start_time.timestamp() * 1_000_000)
+                                            end_ts = int(day_end_time.timestamp() * 1_000_000)
+                                            source_trades = source_trades.filter(
+                                                (pl.col("ts_event").dt.timestamp("us") >= start_ts) &
+                                                (pl.col("ts_event").dt.timestamp("us") <= end_ts)
+                                            )
+                                        except Exception as e:
+                                            pass
+                                    
+                                    if source_nbbo is not None and len(source_nbbo) > 0 and start_time is not None and end_time is not None:
+                                        try:
+                                            day_start_time, day_end_time = get_day_time_range(plot_date, start_time, end_time)
+                                            start_ts = int(day_start_time.timestamp() * 1_000_000)
+                                            end_ts = int(day_end_time.timestamp() * 1_000_000)
+                                            source_nbbo = source_nbbo.filter(
+                                                (pl.col("ts_event").dt.timestamp("us") >= start_ts) &
+                                                (pl.col("ts_event").dt.timestamp("us") <= end_ts)
+                                            )
+                                        except Exception as e:
+                                            pass
+                                    
+                                    if (source_trades is not None and len(source_trades) > 0) or (source_nbbo is not None and len(source_nbbo) > 0):
+                                        # Use day-specific time range for x-axis
+                                        day_start_time, day_end_time = get_day_time_range(plot_date, start_time, end_time)
+                                        fig_price = plot_price_panel(
+                                            source_trades,
+                                            source_nbbo,
+                                            show_trades=show_trades,
+                                            show_nbbo=show_nbbo,
+                                            show_mid_price=show_mid_price,
+                                            show_vwap=show_vwap,
+                                            symbol=f"{selected_symbols[0]} ({source.upper()})",
+                                            start_time=day_start_time,
+                                            end_time=day_end_time,
+                                            min_trade_size=min_trade_size,
+                                        )
+                                        st.plotly_chart(fig_price, width='stretch', key=f"price_{selected_symbols[0]}_{source}_{plot_date}")
+                                    else:
+                                        st.info(f"No data for {source.upper()} on {plot_date}")
+                        else:
+                            # Single source: one plot per day in rows
+                            source = selected_sources[0] if selected_sources else None
+                            if source:
+                                source_data = data_by_source.get(source, {})
+                                # Since we store dates as strings in session state, use direct string access
+                                day_data = source_data.get(date_str, {})
+                                
+                                # Fallback: try get_data_by_date if direct access didn't work
+                                if not day_data or (day_data.get("trades") is None and day_data.get("nbbo") is None):
+                                    day_data = get_data_by_date(source_data, plot_date)
+                                
+                                source_trades = day_data.get("trades") if day_data else None
+                                source_nbbo = day_data.get("nbbo") if day_data else None
+                                
+                                # Filter by time range - apply time portion to the current plot_date
+                                if source_trades is not None and len(source_trades) > 0 and start_time is not None and end_time is not None:
+                                    try:
+                                        day_start_time, day_end_time = get_day_time_range(plot_date, start_time, end_time)
+                                        start_ts = int(day_start_time.timestamp() * 1_000_000)
+                                        end_ts = int(day_end_time.timestamp() * 1_000_000)
+                                        source_trades = source_trades.filter(
+                                            (pl.col("ts_event").dt.timestamp("us") >= start_ts) &
+                                            (pl.col("ts_event").dt.timestamp("us") <= end_ts)
+                                        )
+                                    except Exception as e:
+                                        pass
+                                
+                                if source_nbbo is not None and len(source_nbbo) > 0 and start_time is not None and end_time is not None:
+                                    try:
+                                        day_start_time, day_end_time = get_day_time_range(plot_date, start_time, end_time)
+                                        start_ts = int(day_start_time.timestamp() * 1_000_000)
+                                        end_ts = int(day_end_time.timestamp() * 1_000_000)
+                                        source_nbbo = source_nbbo.filter(
+                                            (pl.col("ts_event").dt.timestamp("us") >= start_ts) &
+                                            (pl.col("ts_event").dt.timestamp("us") <= end_ts)
+                                        )
+                                    except Exception as e:
+                                        pass
+                                
+                                # Debug: Check if we have data after filtering
+                                trades_after = len(source_trades) if source_trades is not None else 0
+                                nbbo_after = len(source_nbbo) if source_nbbo is not None else 0
+                                
+                                if (source_trades is not None and len(source_trades) > 0) or (source_nbbo is not None and len(source_nbbo) > 0):
+                                    # Use day-specific time range for x-axis
+                                    day_start_time, day_end_time = get_day_time_range(plot_date, start_time, end_time)
+                                    fig_price = plot_price_panel(
+                                        source_trades,
+                                        source_nbbo,
+                                        show_trades=show_trades,
+                                        show_nbbo=show_nbbo,
+                                        show_mid_price=show_mid_price,
+                                        show_vwap=show_vwap,
+                                        symbol=f"{selected_symbols[0]}",
+                                        start_time=day_start_time,
+                                        end_time=day_end_time,
+                                        min_trade_size=min_trade_size,
+                                    )
+                                    st.plotly_chart(fig_price, width='stretch', key=f"price_{selected_symbols[0]}_{source}_{plot_date}")
+                                else:
+                                    st.info(f"No data for {source.upper()} on {plot_date}")
+                except Exception as e:
+                    st.error(f"Error creating price panel: {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
+    elif trades is not None or nbbo is not None:
+        # For other modes (Multiple Symbols, etc.), use the old logic
         # Check if we have any data to visualize
         has_trades = trades_for_viz is not None and len(trades_for_viz) > 0
         has_nbbo = nbbo_for_viz is not None and len(nbbo_for_viz) > 0
@@ -896,7 +1422,7 @@ def main():
         else:
             with st.spinner("Generating visualization..."):
                 try:
-                    # If dual source mode and single symbol, show side-by-side plots
+                    # If dual source mode and single symbol (legacy - for non-Single Symbol mode)
                     if show_dual_source and len(selected_symbols) == 1 and len(selected_sources) >= 2:
                         # Dual source mode - show one plot per source in separate rows
                         for source in selected_sources:
@@ -1044,8 +1570,106 @@ def main():
     # Spread panel
     st.header("Spread")
     
-    if show_dual_source and len(selected_symbols) == 1 and len(selected_sources) >= 2:
-        # Dual source mode - show side-by-side for each source
+    if symbol_mode == "Single Symbol":
+        # Single Symbol mode: plots by day
+        selected_dates_list_raw = st.session_state.get("single_symbol_dates", [])
+        # Normalize dates - convert strings to date objects if needed
+        selected_dates_list = []
+        for d in selected_dates_list_raw:
+            if isinstance(d, str):
+                try:
+                    selected_dates_list.append(date.fromisoformat(d))
+                except (ValueError, AttributeError):
+                    continue
+            elif isinstance(d, date):
+                selected_dates_list.append(d)
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_dates = []
+        for d in selected_dates_list:
+            date_key = d.isoformat() if isinstance(d, date) else str(d)
+            if date_key not in seen:
+                seen.add(date_key)
+                unique_dates.append(d)
+        selected_dates_list = unique_dates
+        
+        for plot_date in selected_dates_list:
+            st.subheader(f"{plot_date.strftime('%Y-%m-%d')}")
+            date_str = plot_date.isoformat()
+            
+            if len(selected_sources) == 2:
+                # Two sources: side-by-side plots for each day
+                cols = st.columns(2)
+                for idx, source in enumerate(selected_sources[:2]):  # Only use first 2 sources
+                    with cols[idx]:
+                        source_data = data_by_source.get(source, {})
+                        # Since we store dates as strings in session state, use direct string access
+                        day_data = source_data.get(date_str, {})
+                        
+                        # Fallback: try get_data_by_date if direct access didn't work
+                        if not day_data or day_data.get("nbbo") is None:
+                            day_data = get_data_by_date(source_data, plot_date)
+                        
+                        source_nbbo = day_data.get("nbbo") if day_data else None
+                        
+                        # Filter by time range - apply time portion to the current plot_date
+                        if source_nbbo is not None and len(source_nbbo) > 0 and start_time is not None and end_time is not None:
+                            try:
+                                day_start_time, day_end_time = get_day_time_range(plot_date, start_time, end_time)
+                                start_ts = int(day_start_time.timestamp() * 1_000_000)
+                                end_ts = int(day_end_time.timestamp() * 1_000_000)
+                                source_nbbo = source_nbbo.filter(
+                                    (pl.col("ts_event").dt.timestamp("us") >= start_ts) &
+                                    (pl.col("ts_event").dt.timestamp("us") <= end_ts)
+                                )
+                            except Exception: pass
+                        
+                        if source_nbbo is not None and len(source_nbbo) > 0:
+                            fig_spread = plot_spread_bps_timeline(
+                                source_nbbo,
+                                show_churn=False,
+                                symbol=f"{selected_symbols[0]} ({source.upper()})",
+                            )
+                            st.plotly_chart(fig_spread, width='stretch', key=f"spread_{selected_symbols[0]}_{source}_{plot_date}")
+                        else:
+                            st.info(f"No NBBO data for {source.upper()} on {plot_date}")
+            else:
+                # Single source: one plot per day in rows
+                source = selected_sources[0] if selected_sources else None
+                if source:
+                    source_data = data_by_source.get(source, {})
+                    day_data = source_data.get(date_str, {})
+                    
+                    # Fallback: try get_data_by_date if direct access didn't work
+                    if not day_data or day_data.get("nbbo") is None:
+                        day_data = get_data_by_date(source_data, plot_date)
+                    
+                    source_nbbo = day_data.get("nbbo") if day_data else None
+                    
+                    # Filter by time range - apply time portion to the current plot_date
+                    if source_nbbo is not None and len(source_nbbo) > 0 and start_time is not None and end_time is not None:
+                        try:
+                            day_start_time, day_end_time = get_day_time_range(plot_date, start_time, end_time)
+                            start_ts = int(day_start_time.timestamp() * 1_000_000)
+                            end_ts = int(day_end_time.timestamp() * 1_000_000)
+                            source_nbbo = source_nbbo.filter(
+                                (pl.col("ts_event").dt.timestamp("us") >= start_ts) &
+                                (pl.col("ts_event").dt.timestamp("us") <= end_ts)
+                            )
+                        except Exception: pass
+                    
+                    if source_nbbo is not None and len(source_nbbo) > 0:
+                        fig_spread = plot_spread_bps_timeline(
+                            source_nbbo,
+                            show_churn=False,
+                            symbol=selected_symbols[0] if selected_symbols else None,
+                        )
+                        st.plotly_chart(fig_spread, width='stretch', key=f"spread_{selected_symbols[0]}_{source}_{plot_date}")
+                    else:
+                        st.info(f"No NBBO data for {source.upper()} on {plot_date}")
+    elif show_dual_source and len(selected_symbols) == 1 and len(selected_sources) >= 2:
+        # Dual source mode (legacy - for non-Single Symbol mode) - show side-by-side for each source
         spread_cols = st.columns(len(selected_sources))
         for idx, source in enumerate(selected_sources):
             with spread_cols[idx]:
@@ -1103,8 +1727,104 @@ def main():
     # Churn panel
     st.header("Churn")
     
-    if show_dual_source and len(selected_symbols) == 1 and len(selected_sources) >= 2:
-        # Dual source mode - show side-by-side for each source
+    if symbol_mode == "Single Symbol":
+        # Single Symbol mode: plots by day
+        selected_dates_list_raw = st.session_state.get("single_symbol_dates", [])
+        # Normalize dates - convert strings to date objects if needed
+        selected_dates_list = []
+        for d in selected_dates_list_raw:
+            if isinstance(d, str):
+                try:
+                    selected_dates_list.append(date.fromisoformat(d))
+                except (ValueError, AttributeError):
+                    continue
+            elif isinstance(d, date):
+                selected_dates_list.append(d)
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_dates = []
+        for d in selected_dates_list:
+            date_key = d.isoformat() if isinstance(d, date) else str(d)
+            if date_key not in seen:
+                seen.add(date_key)
+                unique_dates.append(d)
+        selected_dates_list = unique_dates
+        
+        for plot_date in selected_dates_list:
+            st.subheader(f"{plot_date.strftime('%Y-%m-%d')}")
+            date_str = plot_date.isoformat()
+            
+            if len(selected_sources) == 2:
+                # Two sources: side-by-side plots for each day
+                cols = st.columns(2)
+                for idx, source in enumerate(selected_sources[:2]):  # Only use first 2 sources
+                    with cols[idx]:
+                        source_data = data_by_source.get(source, {})
+                        # Since we store dates as strings in session state, use direct string access
+                        day_data = source_data.get(date_str, {})
+                        
+                        # Fallback: try get_data_by_date if direct access didn't work
+                        if not day_data or day_data.get("nbbo") is None:
+                            day_data = get_data_by_date(source_data, plot_date)
+                        
+                        source_nbbo = day_data.get("nbbo") if day_data else None
+                        
+                        # Filter by time range - apply time portion to the current plot_date
+                        if source_nbbo is not None and len(source_nbbo) > 0 and start_time is not None and end_time is not None:
+                            try:
+                                day_start_time, day_end_time = get_day_time_range(plot_date, start_time, end_time)
+                                start_ts = int(day_start_time.timestamp() * 1_000_000)
+                                end_ts = int(day_end_time.timestamp() * 1_000_000)
+                                source_nbbo = source_nbbo.filter(
+                                    (pl.col("ts_event").dt.timestamp("us") >= start_ts) &
+                                    (pl.col("ts_event").dt.timestamp("us") <= end_ts)
+                                )
+                            except Exception: pass
+                        
+                        if source_nbbo is not None and len(source_nbbo) > 0:
+                            fig_churn = plot_churn_bar_chart(
+                                source_nbbo,
+                                symbol=f"{selected_symbols[0]} ({source.upper()})",
+                            )
+                            st.plotly_chart(fig_churn, width='stretch', key=f"churn_{selected_symbols[0]}_{source}_{plot_date}")
+                        else:
+                            st.info(f"No NBBO data for {source.upper()} on {plot_date}")
+            else:
+                # Single source: one plot per day in rows
+                source = selected_sources[0] if selected_sources else None
+                if source:
+                    source_data = data_by_source.get(source, {})
+                    day_data = source_data.get(date_str, {})
+                    
+                    # Fallback: try get_data_by_date if direct access didn't work
+                    if not day_data or day_data.get("nbbo") is None:
+                        day_data = get_data_by_date(source_data, plot_date)
+                    
+                    source_nbbo = day_data.get("nbbo") if day_data else None
+                    
+                    # Filter by time range - apply time portion to the current plot_date
+                    if source_nbbo is not None and len(source_nbbo) > 0 and start_time is not None and end_time is not None:
+                        try:
+                            day_start_time, day_end_time = get_day_time_range(plot_date, start_time, end_time)
+                            start_ts = int(day_start_time.timestamp() * 1_000_000)
+                            end_ts = int(day_end_time.timestamp() * 1_000_000)
+                            source_nbbo = source_nbbo.filter(
+                                (pl.col("ts_event").dt.timestamp("us") >= start_ts) &
+                                (pl.col("ts_event").dt.timestamp("us") <= end_ts)
+                            )
+                        except Exception: pass
+                    
+                    if source_nbbo is not None and len(source_nbbo) > 0:
+                        fig_churn = plot_churn_bar_chart(
+                            source_nbbo,
+                            symbol=selected_symbols[0] if selected_symbols else None,
+                        )
+                        st.plotly_chart(fig_churn, width='stretch', key=f"churn_{selected_symbols[0]}_{source}_{plot_date}")
+                    else:
+                        st.info(f"No NBBO data for {source.upper()} on {plot_date}")
+    elif show_dual_source and len(selected_symbols) == 1 and len(selected_sources) >= 2:
+        # Dual source mode (legacy - for non-Single Symbol mode) - show side-by-side for each source
         churn_cols = st.columns(len(selected_sources))
         for idx, source in enumerate(selected_sources):
             with churn_cols[idx]:

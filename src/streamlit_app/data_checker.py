@@ -356,3 +356,48 @@ def find_common_sources_for_symbols(
         "missing_symbols": missing_symbols,
     }
 
+
+def find_symbols_across_dates(
+    data_root: Path,
+    data_sources: list[str],
+    dates: list[date],
+    data_type: DataType = "trades",
+) -> list[str]:
+    """
+    Find symbols that are available across all given dates in any of the data sources.
+    
+    Args:
+        data_root: Root data directory
+        data_sources: List of data source names to check
+        dates: List of dates to check
+        data_type: Type of data (trades, quotes, nbbo)
+        
+    Returns:
+        List of symbols available across all dates (in at least one source)
+    """
+    if not dates:
+        return []
+    
+    # For each date, find symbols available in any source
+    symbols_by_date = []
+    for check_date in dates:
+        date_symbols = set()
+        for source in data_sources:
+            # Check trades first
+            symbols = find_available_symbols(data_root, source, check_date, data_type)
+            if not symbols:
+                # Fallback to NBBO if no trades
+                symbols = find_available_symbols(data_root, source, check_date, "nbbo")
+            date_symbols.update(symbols)
+        symbols_by_date.append(date_symbols)
+    
+    # Find intersection: symbols available in all dates
+    if not symbols_by_date:
+        return []
+    
+    common_symbols = symbols_by_date[0]
+    for date_symbols in symbols_by_date[1:]:
+        common_symbols = common_symbols.intersection(date_symbols)
+    
+    return sorted(list(common_symbols))
+
