@@ -206,6 +206,7 @@ def plot_price_panel(
     min_trade_size: int | None = None,
     yaxis_range: tuple[float, float] | None = None,
     source: str | None = None,
+    uirevision: str | None = None,
 ) -> go.Figure:
     """
     Plot price panel with bid/ask/mid and trade prints.
@@ -367,7 +368,7 @@ def plot_price_panel(
             end_time.timestamp() * 1000
         ]
     
-    fig.update_layout(
+    layout_dict = dict(
         title=title,
         xaxis_title="Time (NY)",
         yaxis_title="Price ($)",
@@ -376,8 +377,16 @@ def plot_price_panel(
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         xaxis=xaxis_config,
         yaxis=yaxis_config,
-        uirevision="keep",  # Preserves zoom/pan state across Streamlit reruns
     )
+    
+    # Only set uirevision if explicitly provided (use unique values for dual source)
+    if uirevision is not None:
+        layout_dict["uirevision"] = uirevision
+    else:
+        # Default: use "keep" for single plots
+        layout_dict["uirevision"] = "keep"
+    
+    fig.update_layout(**layout_dict)
     
     return fig
 
@@ -386,6 +395,7 @@ def plot_spread_bps_timeline(
     nbbo: pl.DataFrame,
     show_churn: bool = False,
     symbol: str | None = None,
+    uirevision: str | None = None,
 ) -> go.Figure:
     """
     Plot spread in basis points (bps) over time.
@@ -479,12 +489,21 @@ def plot_spread_bps_timeline(
     if symbol:
         title = f"{symbol} - {title}"
     
-    fig.update_layout(
+    layout_dict = dict(
         title=title,
         xaxis_title="Time (NY)",
         height=400,
         hovermode="x unified",
     )
+    
+    # Only set uirevision if explicitly provided (use unique values for dual source)
+    if uirevision is not None:
+        layout_dict["uirevision"] = uirevision
+    else:
+        # Default: use "keep" for single plots
+        layout_dict["uirevision"] = "keep"
+    
+    fig.update_layout(**layout_dict)
     
     return fig
 

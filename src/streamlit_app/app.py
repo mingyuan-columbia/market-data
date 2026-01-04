@@ -592,7 +592,15 @@ def main():
                     trades = all_trades[0]
                 else:
                     try:
-                        trades = pl.concat(all_trades)
+                        # Find common columns across all DataFrames
+                        common_cols = set(all_trades[0].columns)
+                        for df in all_trades[1:]:
+                            common_cols = common_cols.intersection(set(df.columns))
+                        common_cols = sorted(list(common_cols))
+                        
+                        # Select only common columns and use vertical_relaxed to handle type differences
+                        aligned_trades = [df.select(common_cols) for df in all_trades]
+                        trades = pl.concat(aligned_trades, how="vertical_relaxed")
                     except Exception as e:
                         logger.warning(f"Error concatenating trades: {e}, using first DataFrame")
                         trades = all_trades[0]
@@ -605,7 +613,15 @@ def main():
                     nbbo = all_nbbo[0]
                 else:
                     try:
-                        nbbo = pl.concat(all_nbbo)
+                        # Find common columns across all DataFrames
+                        common_cols = set(all_nbbo[0].columns)
+                        for df in all_nbbo[1:]:
+                            common_cols = common_cols.intersection(set(df.columns))
+                        common_cols = sorted(list(common_cols))
+                        
+                        # Select only common columns and use vertical_relaxed to handle type differences
+                        aligned_nbbo = [df.select(common_cols) for df in all_nbbo]
+                        nbbo = pl.concat(aligned_nbbo, how="vertical_relaxed")
                     except Exception as e:
                         logger.warning(f"Error concatenating NBBO: {e}, using first DataFrame")
                         nbbo = all_nbbo[0]
@@ -732,13 +748,26 @@ def main():
             
             # Set default time range to 9:30 with 390 minute duration (full trading day)
             from zoneinfo import ZoneInfo
+            from datetime import time as dt_time
             tz = min_dt.tzinfo if min_dt.tzinfo else ZoneInfo("America/New_York")
-            default_start = min_dt.replace(hour=9, minute=30, second=0, microsecond=0)
-            default_duration_minutes = 390  # 6.5 hours = full trading day (9:30 AM to 4:00 PM)
             
-            # Ensure default start is within the data range
-            if default_start < min_dt:
-                default_start = min_dt
+            # For slider, set min_dt to 9:30 and max_dt to 16:00 on the same date to show full trading day
+            # Use the date from the data but set times to trading day boundaries
+            slider_date = min_dt.date()  # Use the date from min_dt
+            slider_min_dt = datetime.combine(slider_date, dt_time(9, 30, 0))
+            slider_max_dt = datetime.combine(slider_date, dt_time(16, 0, 0))
+            
+            # Add timezone if needed
+            if min_dt.tzinfo:
+                slider_min_dt = slider_min_dt.replace(tzinfo=min_dt.tzinfo)
+                slider_max_dt = slider_max_dt.replace(tzinfo=min_dt.tzinfo)
+            
+            # Use the full trading day range for the slider
+            min_dt = slider_min_dt
+            max_dt = slider_max_dt
+            
+            default_start = min_dt
+            default_duration_minutes = 390  # 6.5 hours = full trading day (9:30 AM to 4:00 PM)
             
             # Calculate default end time
             default_end = default_start + timedelta(minutes=default_duration_minutes)
@@ -849,7 +878,7 @@ def main():
     st.session_state.filter_min_trade_size = min_trade_size
     
     # Apply button outside the filters panel
-    apply_button = st.sidebar.button("Apply Changes", type="primary", use_container_width=True)
+    apply_button = st.sidebar.button("Apply Changes", type="primary")
     
     # Store form state in session state only when button is clicked
     if apply_button or "viz_settings" not in st.session_state:
@@ -1330,6 +1359,8 @@ def main():
                                     if (source_trades is not None and len(source_trades) > 0) or (source_nbbo is not None and len(source_nbbo) > 0):
                                         # Use day-specific time range for x-axis
                                         day_start_time, day_end_time = get_day_time_range(plot_date, start_time, end_time)
+                                        # For dual source, use unique uirevision per plot to avoid conflicts
+                                        unique_plot_id = f"price_{selected_symbols[0]}_{source}_{plot_date}_col{idx}"
                                         fig_price = plot_price_panel(
                                             source_trades,
                                             source_nbbo,
@@ -1341,8 +1372,9 @@ def main():
                                             start_time=day_start_time,
                                             end_time=day_end_time,
                                             min_trade_size=min_trade_size,
+                                            uirevision=unique_plot_id,  # Use unique uirevision per plot
                                         )
-                                        st.plotly_chart(fig_price, width='stretch', key=f"price_{selected_symbols[0]}_{source}_{plot_date}")
+                                        st.plotly_chart(fig_price, width='stretch', key=unique_plot_id)
                                     else:
                                         st.info(f"No data for {source.upper()} on {plot_date}")
                         else:
@@ -1392,6 +1424,8 @@ def main():
                                 if (source_trades is not None and len(source_trades) > 0) or (source_nbbo is not None and len(source_nbbo) > 0):
                                     # Use day-specific time range for x-axis
                                     day_start_time, day_end_time = get_day_time_range(plot_date, start_time, end_time)
+                                    # Use unique uirevision for each plot
+                                    unique_plot_id = f"{selected_symbols[0]}_{source}_{plot_date}"
                                     fig_price = plot_price_panel(
                                         source_trades,
                                         source_nbbo,
@@ -1403,8 +1437,9 @@ def main():
                                         start_time=day_start_time,
                                         end_time=day_end_time,
                                         min_trade_size=min_trade_size,
+                                        uirevision=f"price_{unique_plot_id}",  # Unique uirevision per plot with prefix
                                     )
-                                    st.plotly_chart(fig_price, width='stretch', key=f"price_{selected_symbols[0]}_{source}_{plot_date}")
+                                    st.plotly_chart(fig_price, width='stretch', key=f"price_{unique_plot_id}")
                                 else:
                                     st.info(f"No data for {source.upper()} on {plot_date}")
                 except Exception as e:
@@ -1626,12 +1661,15 @@ def main():
                             except Exception: pass
                         
                         if source_nbbo is not None and len(source_nbbo) > 0:
+                            # For dual source, use unique uirevision per plot to avoid conflicts
+                            unique_plot_id = f"spread_{selected_symbols[0]}_{source}_{plot_date}_col{idx}"
                             fig_spread = plot_spread_bps_timeline(
                                 source_nbbo,
                                 show_churn=False,
                                 symbol=f"{selected_symbols[0]}-{date_formatted} ({source.upper()})",
+                                uirevision=unique_plot_id,  # Use unique uirevision per plot
                             )
-                            st.plotly_chart(fig_spread, width='stretch', key=f"spread_{selected_symbols[0]}_{source}_{plot_date}")
+                            st.plotly_chart(fig_spread, width='stretch', key=unique_plot_id)
                         else:
                             st.info(f"No NBBO data for {source.upper()} on {plot_date}")
             else:
@@ -1660,12 +1698,16 @@ def main():
                         except Exception: pass
                     
                     if source_nbbo is not None and len(source_nbbo) > 0:
+                        # Use unique uirevision for each plot
+                        # Include source in the ID to make it more unique
+                        unique_plot_id = f"spread_{selected_symbols[0]}_{source}_{plot_date}"
                         fig_spread = plot_spread_bps_timeline(
                             source_nbbo,
                             show_churn=False,
                             symbol=f"{selected_symbols[0]}-{date_formatted}" if selected_symbols else None,
+                            uirevision=unique_plot_id,  # Unique uirevision per plot
                         )
-                        st.plotly_chart(fig_spread, width='stretch', key=f"spread_{selected_symbols[0]}_{source}_{plot_date}")
+                        st.plotly_chart(fig_spread, width='stretch', key=unique_plot_id)
                     else:
                         st.info(f"No NBBO data for {source.upper()} on {plot_date}")
     elif show_dual_source and len(selected_symbols) == 1 and len(selected_sources) >= 2:
