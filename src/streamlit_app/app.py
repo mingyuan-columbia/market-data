@@ -981,6 +981,23 @@ def main():
         
         return {}
     
+    # Helper function to get day-specific time range (defined at top level for use in all sections)
+    def get_day_time_range(plot_date, start_time, end_time):
+        """Extract time portion from start_time/end_time and apply to plot_date."""
+        from datetime import datetime
+        start_time_only = start_time.time()
+        end_time_only = end_time.time()
+        
+        day_start_time = datetime.combine(plot_date, start_time_only)
+        day_end_time = datetime.combine(plot_date, end_time_only)
+        
+        # Handle timezone if start_time has one
+        if start_time.tzinfo is not None:
+            day_start_time = day_start_time.replace(tzinfo=start_time.tzinfo)
+            day_end_time = day_end_time.replace(tzinfo=end_time.tzinfo)
+        
+        return day_start_time, day_end_time
+    
     # Check if we have any data
     symbol_mode = st.session_state.get("symbol_mode", "Single Symbol")
     if symbol_mode == "Single Symbol":
@@ -1222,23 +1239,6 @@ def main():
     
     # For Single Symbol mode, check individual day data instead of combined data
     if symbol_mode == "Single Symbol":
-        # Helper function to get day-specific time range (defined at top level for use in all panels)
-        def get_day_time_range(plot_date, start_time, end_time):
-            """Extract time portion from start_time/end_time and apply to plot_date."""
-            from datetime import datetime
-            start_time_only = start_time.time()
-            end_time_only = end_time.time()
-            
-            day_start_time = datetime.combine(plot_date, start_time_only)
-            day_end_time = datetime.combine(plot_date, end_time_only)
-            
-            # Handle timezone if start_time has one
-            if start_time.tzinfo is not None:
-                day_start_time = day_start_time.replace(tzinfo=start_time.tzinfo)
-                day_end_time = day_end_time.replace(tzinfo=end_time.tzinfo)
-            
-            return day_start_time, day_end_time
-        
         # Check if we have any data for any day
         selected_dates_list_raw = st.session_state.get("single_symbol_dates", [])
         has_any_data = False
@@ -1283,8 +1283,8 @@ def main():
                     selected_dates_list = unique_dates
                     
                     for plot_date in selected_dates_list:
-                        st.subheader(f"{plot_date.strftime('%Y-%m-%d')}")
                         date_str = plot_date.isoformat()  # Define date_str for both paths
+                        date_formatted = plot_date.strftime('%Y/%m/%d')  # Format for plot caption
                         
                         if len(selected_sources) == 2:
                             # Two sources: side-by-side plots for each day
@@ -1337,7 +1337,7 @@ def main():
                                             show_nbbo=show_nbbo,
                                             show_mid_price=show_mid_price,
                                             show_vwap=show_vwap,
-                                            symbol=f"{selected_symbols[0]} ({source.upper()})",
+                                            symbol=f"{selected_symbols[0]}-{date_formatted} ({source.upper()})",
                                             start_time=day_start_time,
                                             end_time=day_end_time,
                                             min_trade_size=min_trade_size,
@@ -1399,7 +1399,7 @@ def main():
                                         show_nbbo=show_nbbo,
                                         show_mid_price=show_mid_price,
                                         show_vwap=show_vwap,
-                                        symbol=f"{selected_symbols[0]}",
+                                        symbol=f"{selected_symbols[0]}-{date_formatted}",
                                         start_time=day_start_time,
                                         end_time=day_end_time,
                                         min_trade_size=min_trade_size,
@@ -1595,8 +1595,8 @@ def main():
         selected_dates_list = unique_dates
         
         for plot_date in selected_dates_list:
-            st.subheader(f"{plot_date.strftime('%Y-%m-%d')}")
             date_str = plot_date.isoformat()
+            date_formatted = plot_date.strftime('%Y/%m/%d')  # Format for plot caption
             
             if len(selected_sources) == 2:
                 # Two sources: side-by-side plots for each day
@@ -1629,7 +1629,7 @@ def main():
                             fig_spread = plot_spread_bps_timeline(
                                 source_nbbo,
                                 show_churn=False,
-                                symbol=f"{selected_symbols[0]} ({source.upper()})",
+                                symbol=f"{selected_symbols[0]}-{date_formatted} ({source.upper()})",
                             )
                             st.plotly_chart(fig_spread, width='stretch', key=f"spread_{selected_symbols[0]}_{source}_{plot_date}")
                         else:
@@ -1663,7 +1663,7 @@ def main():
                         fig_spread = plot_spread_bps_timeline(
                             source_nbbo,
                             show_churn=False,
-                            symbol=selected_symbols[0] if selected_symbols else None,
+                            symbol=f"{selected_symbols[0]}-{date_formatted}" if selected_symbols else None,
                         )
                         st.plotly_chart(fig_spread, width='stretch', key=f"spread_{selected_symbols[0]}_{source}_{plot_date}")
                     else:
@@ -1752,8 +1752,8 @@ def main():
         selected_dates_list = unique_dates
         
         for plot_date in selected_dates_list:
-            st.subheader(f"{plot_date.strftime('%Y-%m-%d')}")
             date_str = plot_date.isoformat()
+            date_formatted = plot_date.strftime('%Y/%m/%d')  # Format for plot caption
             
             if len(selected_sources) == 2:
                 # Two sources: side-by-side plots for each day
@@ -1785,7 +1785,7 @@ def main():
                         if source_nbbo is not None and len(source_nbbo) > 0:
                             fig_churn = plot_churn_bar_chart(
                                 source_nbbo,
-                                symbol=f"{selected_symbols[0]} ({source.upper()})",
+                                symbol=f"{selected_symbols[0]}-{date_formatted} ({source.upper()})",
                             )
                             st.plotly_chart(fig_churn, width='stretch', key=f"churn_{selected_symbols[0]}_{source}_{plot_date}")
                         else:
@@ -1818,7 +1818,7 @@ def main():
                     if source_nbbo is not None and len(source_nbbo) > 0:
                         fig_churn = plot_churn_bar_chart(
                             source_nbbo,
-                            symbol=selected_symbols[0] if selected_symbols else None,
+                            symbol=f"{selected_symbols[0]}-{date_formatted}" if selected_symbols else None,
                         )
                         st.plotly_chart(fig_churn, width='stretch', key=f"churn_{selected_symbols[0]}_{source}_{plot_date}")
                     else:
@@ -1879,7 +1879,228 @@ def main():
     # Tables
     st.header("Tables")
     
-    if show_dual_source and len(selected_symbols) == 1 and len(selected_sources) >= 2:
+    if symbol_mode == "Single Symbol":
+        # Single Symbol mode: Tables by date
+        selected_dates_list_raw = st.session_state.get("single_symbol_dates", [])
+        # Normalize dates - convert strings to date objects if needed
+        selected_dates_list = []
+        for d in selected_dates_list_raw:
+            if isinstance(d, str):
+                try:
+                    selected_dates_list.append(date.fromisoformat(d))
+                except (ValueError, AttributeError):
+                    continue
+            elif isinstance(d, date):
+                selected_dates_list.append(d)
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_dates = []
+        for d in selected_dates_list:
+            date_key = d.isoformat() if isinstance(d, date) else str(d)
+            if date_key not in seen:
+                seen.add(date_key)
+                unique_dates.append(d)
+        selected_dates_list = unique_dates
+        
+        for plot_date in selected_dates_list:
+            date_str = plot_date.isoformat()
+            date_formatted = plot_date.strftime('%Y/%m/%d')
+            
+            st.caption(f"{plot_date.strftime('%Y-%m-%d')}")
+            
+            if len(selected_sources) == 2:
+                # Two sources: side-by-side tables for each day
+                # Trade Summary - Largest trades
+                st.subheader("Trade Summary - Largest Trades")
+                trade_summary_cols = st.columns(2)
+                for idx, source in enumerate(selected_sources[:2]):
+                    with trade_summary_cols[idx]:
+                        st.caption(f"{source.upper()}")
+                        source_data = data_by_source.get(source, {})
+                        day_data = get_data_by_date(source_data, plot_date)
+                        source_trades = day_data.get("trades")
+                        
+                        # Filter by time range
+                        if source_trades is not None and len(source_trades) > 0 and start_time is not None and end_time is not None:
+                            try:
+                                day_start_time, day_end_time = get_day_time_range(plot_date, start_time, end_time)
+                                start_ts = int(day_start_time.timestamp() * 1_000_000)
+                                end_ts = int(day_end_time.timestamp() * 1_000_000)
+                                source_trades = source_trades.filter(
+                                    (pl.col("ts_event").dt.timestamp("us") >= start_ts) &
+                                    (pl.col("ts_event").dt.timestamp("us") <= end_ts)
+                                )
+                            except Exception:
+                                pass
+                        
+                        if source_trades is not None and len(source_trades) > 0 and "size" in source_trades.columns:
+                            try:
+                                largest_trades = source_trades.sort("size", descending=True).head(100).select([
+                                    "ts_event",
+                                    "symbol",
+                                    "price",
+                                    "size",
+                                ]).to_pandas()
+                                
+                                if len(largest_trades) > 0:
+                                    largest_trades["ts_event"] = largest_trades["ts_event"].dt.strftime("%H:%M:%S.%f").str[:-3]
+                                    largest_trades["price"] = largest_trades["price"].round(4)
+                                    
+                                    st.dataframe(
+                                        largest_trades,
+                                        width='stretch',
+                                        hide_index=True,
+                                    )
+                                    st.caption(f"Top 100 largest trades. Total: {len(source_trades):,}")
+                                else:
+                                    st.info("No trades to display")
+                            except Exception as e:
+                                st.error(f"Error displaying trades for {source}: {e}")
+                        else:
+                            st.info(f"No trade data for {source}")
+                
+                # Highest Churn Minutes
+                st.subheader("Highest Churn Minutes")
+                churn_table_cols = st.columns(2)
+                for idx, source in enumerate(selected_sources[:2]):
+                    with churn_table_cols[idx]:
+                        st.caption(f"{source.upper()}")
+                        source_data = data_by_source.get(source, {})
+                        day_data = get_data_by_date(source_data, plot_date)
+                        source_nbbo = day_data.get("nbbo")
+                        
+                        # Filter by time range
+                        if source_nbbo is not None and len(source_nbbo) > 0 and start_time is not None and end_time is not None:
+                            try:
+                                day_start_time, day_end_time = get_day_time_range(plot_date, start_time, end_time)
+                                start_ts = int(day_start_time.timestamp() * 1_000_000)
+                                end_ts = int(day_end_time.timestamp() * 1_000_000)
+                                source_nbbo = source_nbbo.filter(
+                                    (pl.col("ts_event").dt.timestamp("us") >= start_ts) &
+                                    (pl.col("ts_event").dt.timestamp("us") <= end_ts)
+                                )
+                            except Exception:
+                                pass
+                        
+                        if source_nbbo is not None and len(source_nbbo) > 0:
+                            try:
+                                highest_churn = get_highest_churn_minutes(source_nbbo, top_n=20)
+                                highest_churn_pd = highest_churn.to_pandas()
+                                
+                                if len(highest_churn_pd) > 0:
+                                    highest_churn_pd["time_bucket"] = highest_churn_pd["time_bucket"].dt.strftime("%H:%M:%S")
+                                    highest_churn_pd = highest_churn_pd.rename(columns={"time_bucket": "Time", "churn": "Updates"})
+                                    
+                                    st.dataframe(
+                                        highest_churn_pd,
+                                        width='stretch',
+                                        hide_index=True,
+                                    )
+                                else:
+                                    st.info("No churn data available")
+                            except Exception as e:
+                                st.error(f"Error calculating churn for {source}: {e}")
+                        else:
+                            st.info(f"No NBBO data for {source}")
+            else:
+                # Single source: one table per day
+                source = selected_sources[0] if selected_sources else None
+                if source:
+                    source_data = data_by_source.get(source, {})
+                    day_data = get_data_by_date(source_data, plot_date)
+                    source_trades = day_data.get("trades")
+                    source_nbbo = day_data.get("nbbo")
+                    
+                    # Filter by time range
+                    if source_trades is not None and len(source_trades) > 0 and start_time is not None and end_time is not None:
+                        try:
+                            day_start_time, day_end_time = get_day_time_range(plot_date, start_time, end_time)
+                            start_ts = int(day_start_time.timestamp() * 1_000_000)
+                            end_ts = int(day_end_time.timestamp() * 1_000_000)
+                            source_trades = source_trades.filter(
+                                (pl.col("ts_event").dt.timestamp("us") >= start_ts) &
+                                (pl.col("ts_event").dt.timestamp("us") <= end_ts)
+                            )
+                        except Exception:
+                            pass
+                    
+                    if source_nbbo is not None and len(source_nbbo) > 0 and start_time is not None and end_time is not None:
+                        try:
+                            day_start_time, day_end_time = get_day_time_range(plot_date, start_time, end_time)
+                            start_ts = int(day_start_time.timestamp() * 1_000_000)
+                            end_ts = int(day_end_time.timestamp() * 1_000_000)
+                            source_nbbo = source_nbbo.filter(
+                                (pl.col("ts_event").dt.timestamp("us") >= start_ts) &
+                                (pl.col("ts_event").dt.timestamp("us") <= end_ts)
+                            )
+                        except Exception:
+                            pass
+                    
+                    # Trade Summary - Largest trades
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        if source_trades is not None and len(source_trades) > 0:
+                            st.subheader("Trade Summary - Largest Trades")
+                            try:
+                                if "size" in source_trades.columns:
+                                    largest_trades = source_trades.sort("size", descending=True).head(100).select([
+                                        "ts_event",
+                                        "symbol",
+                                        "price",
+                                        "size",
+                                    ]).to_pandas()
+                                else:
+                                    largest_trades = source_trades.select([
+                                        "ts_event",
+                                        "symbol",
+                                        "price",
+                                    ]).head(100).to_pandas()
+                                
+                                if len(largest_trades) > 0:
+                                    largest_trades["ts_event"] = largest_trades["ts_event"].dt.strftime("%H:%M:%S.%f").str[:-3]
+                                    if "price" in largest_trades.columns:
+                                        largest_trades["price"] = largest_trades["price"].round(4)
+                                    
+                                    st.dataframe(
+                                        largest_trades,
+                                        width='stretch',
+                                        hide_index=True,
+                                    )
+                                    st.caption(f"Top 100 largest trades. Total: {len(source_trades):,}")
+                                else:
+                                    st.info("No trades to display")
+                            except Exception as e:
+                                st.error(f"Error displaying trades: {e}")
+                        else:
+                            st.info("Trades data required")
+                    
+                    with col2:
+                        if source_nbbo is not None and len(source_nbbo) > 0:
+                            st.subheader("Highest Churn Minutes")
+                            try:
+                                highest_churn = get_highest_churn_minutes(source_nbbo, top_n=20)
+                                highest_churn_pd = highest_churn.to_pandas()
+                                
+                                if len(highest_churn_pd) > 0:
+                                    highest_churn_pd["time_bucket"] = highest_churn_pd["time_bucket"].dt.strftime("%H:%M:%S")
+                                    highest_churn_pd = highest_churn_pd.rename(columns={"time_bucket": "Time", "churn": "Updates"})
+                                    
+                                    st.dataframe(
+                                        highest_churn_pd,
+                                        width='stretch',
+                                        hide_index=True,
+                                    )
+                                    st.caption(f"Top 20 minutes with highest quote churn. Total NBBO updates: {len(source_nbbo):,}")
+                                else:
+                                    st.info("No churn data available")
+                            except Exception as e:
+                                st.error(f"Error calculating churn: {e}")
+                        else:
+                            st.info("NBBO data required")
+    
+    elif show_dual_source and len(selected_symbols) == 1 and len(selected_sources) >= 2:
         # Dual source mode - show tables for each source
         # Trade Summary - Largest trades
         st.subheader("Trade Summary - Largest Trades")
